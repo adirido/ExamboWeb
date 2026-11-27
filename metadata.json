@@ -1,0 +1,8 @@
+{
+  "name": "ExamFlow Pro",
+  "description": "Sistem Ujian Sekolah Terpadu (Web Guru, Portal Ujian Siswa, Live Monitoring \u0026 Integrasi APK Exambro Android).",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

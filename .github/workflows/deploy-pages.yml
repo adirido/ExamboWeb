@@ -1,0 +1,90 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve and validate Supabase frontend env
+        id: supabase_env
+        env:
+          RAW_URL: ${{ vars.VITE_SUPABASE_URL }}
+          RAW_ANON: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          RAW_API: ${{ vars.VITE_API_BASE_URL }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          RESOLVED_URL="$RAW_URL"
+          if [ -z "$RESOLVED_URL" ] || echo "$RESOLVED_URL" | grep -qE '<|your-project-ref'; then
+            if [ -n "$PROJECT_REF" ]; then
+              RESOLVED_URL="https://${PROJECT_REF}.supabase.co"
+              echo "::notice::VITE_SUPABASE_URL belum valid; otomatis memakai https://${PROJECT_REF}.supabase.co"
+            fi
+          fi
+
+          RESOLVED_API="$RAW_API"
+          if [ -z "$RESOLVED_API" ] || echo "$RESOLVED_API" | grep -qE '<|your-project-ref'; then
+            if [ -n "$RESOLVED_URL" ]; then
+              RESOLVED_API="${RESOLVED_URL%/}/functions/v1/api"
+              echo "::notice::VITE_API_BASE_URL belum valid; otomatis memakai ${RESOLVED_API}"
+            fi
+          fi
+
+          if [ -z "$RAW_ANON" ] || echo "$RAW_ANON" | grep -qE '<|your-'; then
+            echo "::error::Variable VITE_SUPABASE_ANON_KEY belum diisi dengan key asli (masih kosong atau masih berisi placeholder). Salin anon public key dari Supabase -> Project Settings -> API Keys ke GitHub Actions Variables."
+            exit 1
+          fi
+
+          echo "VITE_SUPABASE_URL=${RESOLVED_URL}" >> "$GITHUB_ENV"
+          echo "VITE_SUPABASE_ANON_KEY=${RAW_ANON}" >> "$GITHUB_ENV"
+          echo "VITE_API_BASE_URL=${RESOLVED_API}" >> "$GITHUB_ENV"
+
+      - name: Build static bundle for GitHub Pages
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - name: Ensure SPA fallback for GitHub Pages
+        run: cp dist/index.html dist/404.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

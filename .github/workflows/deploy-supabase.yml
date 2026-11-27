@@ -1,0 +1,98 @@
+name: Deploy Supabase Backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'supabase/**'
+      - '.github/workflows/deploy-supabase.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-backend
+  cancel-in-progress: true
+
+jobs:
+  deploy-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required Supabase secrets
+        id: check_secrets
+        env:
+          HAS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN != '' }}
+          HAS_REF: ${{ secrets.SUPABASE_PROJECT_REF != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ] || [ "$HAS_REF" != "true" ]; then
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "::error::Tambahkan GitHub Secrets SUPABASE_ACCESS_TOKEN dan SUPABASE_PROJECT_REF terlebih dahulu di Settings -> Secrets and variables -> Actions."
+              exit 1
+            else
+              echo "::notice::Lewati deploy otomatis Supabase karena SUPABASE_ACCESS_TOKEN / SUPABASE_PROJECT_REF belum diisi di GitHub Secrets."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Supabase CLI
+        if: steps.check_secrets.outputs.skip != 'true'
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Push PostgreSQL migrations
+        if: steps.check_secrets.outputs.skip != 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          if [ -n "$SUPABASE_DB_PASSWORD" ]; then
+            supabase link --project-ref "$SUPABASE_PROJECT_REF"
+            supabase db push --remote --yes
+          else
+            echo "::notice::SUPABASE_DB_PASSWORD belum diisi, langkah 'supabase db push' dilewati. Pastikan Anda sudah menjalankan supabase/migrations/001_initial_schema.sql di SQL Editor Supabase (atau tambahkan SUPABASE_DB_PASSWORD di GitHub Secrets)."
+          fi
+
+      - name: Configure Edge Function secrets
+        if: steps.check_secrets.outputs.skip != 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          EXAMFLOW_QR_SECRET: ${{ secrets.EXAMFLOW_QR_SECRET }}
+          CUSTOM_ALLOWED_ORIGIN: ${{ vars.ALLOWED_ORIGIN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          OWNER_LOWER=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          TARGET_ORIGIN="${CUSTOM_ALLOWED_ORIGIN:-https://${OWNER_LOWER}.github.io}"
+
+          if [ -n "$EXAMFLOW_QR_SECRET" ]; then
+            supabase secrets set --yes --project-ref "$SUPABASE_PROJECT_REF" \
+              EXAMFLOW_QR_SECRET="$EXAMFLOW_QR_SECRET" \
+              ALLOWED_ORIGIN="$TARGET_ORIGIN"
+          else
+            echo "::notice::EXAMFLOW_QR_SECRET belum diisi di GitHub Secrets; hanya mengatur ALLOWED_ORIGIN."
+            supabase secrets set --yes --project-ref "$SUPABASE_PROJECT_REF" \
+              ALLOWED_ORIGIN="$TARGET_ORIGIN"
+          fi
+
+      - name: Deploy Edge Function api
+        if: steps.check_secrets.outputs.skip != 'true'
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          supabase functions deploy api --yes --no-verify-jwt --project-ref "$SUPABASE_PROJECT_REF"
+          {
+            echo "### Supabase Backend Deployed"
+            echo ""
+            echo "- **Edge Function API URL**: \`https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/api\`"
+            echo "- **Health Check**: \`https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/api/health\`"
+          } >> "$GITHUB_STEP_SUMMARY"
