@@ -369,6 +369,7 @@ function resolveAllowedOrigin(req: Request): string {
         host === '127.0.0.1' ||
         host.endsWith('.github.io') ||
         host.endsWith('.vercel.app') ||
+        host.endsWith('.pages.dev') ||
         host.endsWith('.run.app')
       ) {
         return reqOrigin;
@@ -816,6 +817,575 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // 1B. ADMIN: TEACHERS & SUBJECTS MANAGEMENT
+    if (method === 'GET' && path === '/subjects') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const [{ data: subjects }, { data: pkgRows }, { data: qRows }] = await Promise.all([
+        supabase.from('subjects').select('*').order('name', { ascending: true }),
+        supabase.from('exam_packages').select('subject_id'),
+        supabase.from('questions').select('subject_id'),
+      ]);
+
+      const list = (subjects || []).map((s: { id: number; code: string; name: string; description: string }) => ({
+        ...s,
+        package_count: (pkgRows || []).filter((p: { subject_id: number }) => p.subject_id === s.id).length,
+        question_count: (qRows || []).filter((q: { subject_id: number }) => q.subject_id === s.id).length,
+      }));
+
+      return jsonResponse(req, { subjects: list });
+    }
+
+    if (method === 'POST' && path === '/subjects') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+
+      const { code, name, description = '' } = await readJsonBody<{
+        code?: string;
+        name?: string;
+        description?: string;
+      }>(req);
+
+      const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+      const cleanName = (name || '').trim();
+      if (!cleanCode || cleanCode.length < 2 || cleanCode.length > 16 || !cleanName) {
+        return jsonResponse(
+          req,
+          { error: 'Kode mapel (2–16 huruf/angka) dan nama mata pelajaran wajib diisi.' },
+          400
+        );
+      }
+
+      const { data: created, error } = await supabase
+        .from('subjects')
+        .insert({ code: cleanCode, name: cleanName, description: description.trim() })
+        .select('*')
+        .single();
+
+      if (error || !created) {
+        return jsonResponse(req, { error: `Kode mata pelajaran "${cleanCode}" sudah terdaftar.` }, 409);
+      }
+      return jsonResponse(req, { subject: created }, 201);
+    }
+
+    const subjectMatch = path.match(/^\/subjects\/(\d+)$/);
+    if (subjectMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const subjectId = Number(subjectMatch[1]);
+
+      if (method === 'PUT') {
+        const { data: existing } = await supabase
+          .from('subjects')
+          .select('*')
+          .eq('id', subjectId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Mata pelajaran tidak ditemukan.' }, 404);
+        }
+
+        const { code, name, description } = await readJsonBody<{
+          code?: string;
+          name?: string;
+          description?: string;
+        }>(req);
+
+        const nextCode =
+          code !== undefined ? code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '') : existing.code;
+        const nextName = name !== undefined ? name.trim() : existing.name;
+        const nextDesc = description !== undefined ? description.trim() : existing.description;
+
+        if (!nextCode || nextCode.length < 2 || nextCode.length > 16 || !nextName) {
+          return jsonResponse(
+            req,
+            { error: 'Kode mapel (2–16 huruf/angka) dan nama mata pelajaran wajib diisi.' },
+            400
+          );
+        }
+
+        const { data: updated, error } = await supabase
+          .from('subjects')
+          .update({ code: nextCode, name: nextName, description: nextDesc })
+          .eq('id', subjectId)
+          .select('*')
+          .single();
+
+        if (error || !updated) {
+          return jsonResponse(req, { error: `Kode mata pelajaran "${nextCode}" sudah digunakan mapel lain.` }, 409);
+        }
+        return jsonResponse(req, { subject: updated });
+      }
+
+      if (method === 'DELETE') {
+        const { count: usedPackages } = await supabase
+          .from('exam_packages')
+          .select('id', { count: 'exact', head: true })
+          .eq('subject_id', subjectId);
+
+        if ((usedPackages || 0) > 0) {
+          return jsonResponse(
+            req,
+            {
+              error: `Mata pelajaran tidak dapat dihapus karena masih digunakan oleh ${usedPackages} paket ujian.`,
+            },
+            409
+          );
+        }
+
+        const { data: deleted } = await supabase.from('subjects').delete().eq('id', subjectId).select('id');
+        if (!deleted || deleted.length === 0) {
+          return jsonResponse(req, { error: 'Mata pelajaran tidak ditemukan.' }, 404);
+        }
+        return jsonResponse(req, { success: true });
+      }
+    }
+
+    if (method === 'GET' && path === '/admin/teachers') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+
+      const [{ data: teachers }, { data: pkgRows }, { data: rawAssignments }] = await Promise.all([
+        supabase
+          .from('teachers')
+          .select('id, name, email, role, created_at')
+          .order('role', { ascending: true })
+          .order('name', { ascending: true }),
+        supabase.from('exam_packages').select('teacher_id'),
+        supabase
+          .from('teacher_assignments')
+          .select('id, teacher_id, subject_id, class_id, subjects(code, name), classes(name, grade_level)'),
+      ]);
+
+      const mappedAssignments = (rawAssignments || []).map((row: Record<string, unknown>) => {
+        const subj = row.subjects as { code: string; name: string } | null;
+        const cls = row.classes as { name: string; grade_level: number } | null;
+        return {
+          id: row.id as number,
+          teacher_id: row.teacher_id as number,
+          subject_id: row.subject_id as number,
+          class_id: row.class_id as number,
+          subject_code: subj?.code || '',
+          subject_name: subj?.name || '',
+          class_name: cls?.name || '',
+          grade_level: cls?.grade_level || 8,
+        };
+      });
+
+      const list = (teachers || []).map((t: Record<string, unknown>) => ({
+        ...t,
+        package_count: (pkgRows || []).filter((p: { teacher_id: number }) => p.teacher_id === t.id).length,
+        assignments: mappedAssignments.filter((a) => a.teacher_id === t.id),
+      }));
+
+      return jsonResponse(req, { teachers: list });
+    }
+
+    if (method === 'POST' && path === '/admin/teachers') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+
+      const { name, email, password, role = 'TEACHER' } = await readJsonBody<{
+        name?: string;
+        email?: string;
+        password?: string;
+        role?: 'TEACHER' | 'ADMIN';
+      }>(req);
+
+      const cleanName = (name || '').trim();
+      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanRole = role === 'ADMIN' ? 'ADMIN' : 'TEACHER';
+
+      if (!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        return jsonResponse(req, { error: 'Nama lengkap dan format email guru yang valid wajib diisi.' }, 400);
+      }
+      if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
+        return jsonResponse(req, { error: 'Kata sandi awal harus terdiri dari 6–128 karakter.' }, 400);
+      }
+
+      const { data: created, error } = await supabase
+        .from('teachers')
+        .insert({ name: cleanName, email: cleanEmail, password_hash: hashSecret(password), role: cleanRole })
+        .select('id, name, email, role, created_at')
+        .single();
+
+      if (error || !created) {
+        return jsonResponse(req, { error: `Email "${cleanEmail}" sudah terdaftar.` }, 409);
+      }
+      return jsonResponse(req, { teacher: created }, 201);
+    }
+
+    if (method === 'POST' && path === '/admin/teachers/import') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+
+      const { rawText, updateExisting = false } = await readJsonBody<{
+        rawText?: string;
+        updateExisting?: boolean;
+      }>(req);
+
+      if (!rawText || !rawText.trim()) {
+        return jsonResponse(req, { error: 'Data teks atau file CSV guru tidak boleh kosong.' }, 400);
+      }
+
+      const lines = rawText
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      if (lines.length === 0) {
+        return jsonResponse(req, { error: 'Tidak ada baris data guru yang ditemukan.' }, 400);
+      }
+
+      function splitDelimitedLine(line: string): string[] {
+        let delimiter = ',';
+        if (line.includes('\t')) delimiter = '\t';
+        else if (line.includes(';')) delimiter = ';';
+        const cells: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+              current += '"';
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (ch === delimiter && !inQuotes) {
+            cells.push(current.trim());
+            current = '';
+          } else {
+            current += ch;
+          }
+        }
+        cells.push(current.trim());
+        return cells;
+      }
+
+      function generateTeacherPass(length = 8): string {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+        let out = '';
+        for (let i = 0; i < length; i++) out += chars[crypto.randomInt(0, chars.length)];
+        return out;
+      }
+
+      const importedCredentials: Array<{
+        name: string;
+        email: string;
+        role: 'TEACHER' | 'ADMIN';
+        password: string;
+        action: 'CREATED' | 'UPDATED';
+      }> = [];
+      const skipped: Array<{ lineNumber: number; email: string; name: string; reason: string }> = [];
+      const errors: Array<{ lineNumber: number; raw: string; reason: string }> = [];
+      let totalRows = 0;
+
+      for (let idx = 0; idx < lines.length; idx++) {
+        const lineNumber = idx + 1;
+        const line = lines[idx];
+        const cols = splitDelimitedLine(line);
+
+        if (idx === 0) {
+          const c0 = (cols[0] || '').toLowerCase();
+          const c1 = (cols[1] || '').toLowerCase();
+          if (c0.includes('nama') || c0 === 'name' || c1.includes('email')) {
+            continue;
+          }
+        }
+
+        totalRows++;
+        if (cols.length < 2) {
+          errors.push({ lineNumber, raw: line, reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, Email).' });
+          continue;
+        }
+
+        const name = cols[0].trim();
+        const email = cols[1].trim().toLowerCase();
+        const rawRole = (cols[2] || 'TEACHER').trim().toUpperCase();
+        const rawPass = (cols[3] || '').trim();
+
+        if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          errors.push({ lineNumber, raw: line, reason: 'Nama lengkap atau format email tidak valid.' });
+          continue;
+        }
+        if (rawRole && !['TEACHER', 'GURU', 'ADMIN'].includes(rawRole)) {
+          errors.push({ lineNumber, raw: line, reason: 'Kolom Role harus berupa TEACHER (atau GURU) atau ADMIN.' });
+          continue;
+        }
+
+        const role: 'TEACHER' | 'ADMIN' = rawRole === 'ADMIN' ? 'ADMIN' : 'TEACHER';
+        if (rawPass && (rawPass.length < 6 || rawPass.length > 128)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: 'Password harus terdiri dari 6–128 karakter (atau kosongkan untuk otomatis).',
+          });
+          continue;
+        }
+
+        const { data: existing } = await supabase
+          .from('teachers')
+          .select('id, role')
+          .eq('email', email)
+          .maybeSingle();
+
+        if (existing && !updateExisting) {
+          skipped.push({ lineNumber, email, name, reason: 'Email sudah terdaftar (lewati duplikat).' });
+          continue;
+        }
+
+        if (existing && updateExisting) {
+          if (existing.role === 'ADMIN' && role !== 'ADMIN') {
+            const { count: adminCount } = await supabase
+              .from('teachers')
+              .select('id', { count: 'exact', head: true })
+              .eq('role', 'ADMIN');
+            if ((adminCount || 0) <= 1) {
+              errors.push({ lineNumber, raw: line, reason: 'Tidak dapat menurunkan peran Admin terakhir di sistem.' });
+              continue;
+            }
+          }
+
+          if (rawPass) {
+            await supabase
+              .from('teachers')
+              .update({ name, role, password_hash: hashSecret(rawPass) })
+              .eq('id', existing.id);
+            importedCredentials.push({ name, email, role, password: rawPass, action: 'UPDATED' });
+          } else {
+            await supabase.from('teachers').update({ name, role }).eq('id', existing.id);
+            importedCredentials.push({ name, email, role, password: 'Tetap (Tersimpan)', action: 'UPDATED' });
+          }
+        } else {
+          const plainPass = rawPass || generateTeacherPass(8);
+          await supabase
+            .from('teachers')
+            .insert({ name, email, password_hash: hashSecret(plainPass), role });
+          importedCredentials.push({ name, email, role, password: plainPass, action: 'CREATED' });
+        }
+      }
+
+      return jsonResponse(req, {
+        summary: {
+          totalRows,
+          createdCount: importedCredentials.filter((c) => c.action === 'CREATED').length,
+          updatedCount: importedCredentials.filter((c) => c.action === 'UPDATED').length,
+          skippedCount: skipped.length,
+          errorCount: errors.length,
+        },
+        importedCredentials,
+        skipped,
+        errors,
+      });
+    }
+
+    const adminTeacherMatch = path.match(/^\/admin\/teachers\/(\d+)$/);
+    if (adminTeacherMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const targetId = Number(adminTeacherMatch[1]);
+
+      if (method === 'PUT') {
+        const { data: existing } = await supabase
+          .from('teachers')
+          .select('id, name, email, role, password_hash')
+          .eq('id', targetId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Akun guru tidak ditemukan.' }, 404);
+        }
+
+        const { name, email, role, newPassword } = await readJsonBody<{
+          name?: string;
+          email?: string;
+          role?: 'TEACHER' | 'ADMIN';
+          newPassword?: string;
+        }>(req);
+
+        const nextName = name !== undefined ? name.trim() : existing.name;
+        const nextEmail = email !== undefined ? email.trim().toLowerCase() : existing.email;
+        const nextRole = role === 'ADMIN' || role === 'TEACHER' ? role : existing.role;
+
+        if (!nextName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+          return jsonResponse(req, { error: 'Nama lengkap dan email yang valid wajib diisi.' }, 400);
+        }
+
+        if (existing.role === 'ADMIN' && nextRole !== 'ADMIN') {
+          const { count: adminCount } = await supabase
+            .from('teachers')
+            .select('id', { count: 'exact', head: true })
+            .eq('role', 'ADMIN');
+          if ((adminCount || 0) <= 1) {
+            return jsonResponse(req, { error: 'Tidak dapat menurunkan peran Admin terakhir di sistem.' }, 400);
+          }
+        }
+
+        let nextHash = existing.password_hash;
+        if (typeof newPassword === 'string' && newPassword.length > 0) {
+          if (newPassword.length < 6 || newPassword.length > 128) {
+            return jsonResponse(req, { error: 'Kata sandi baru harus terdiri dari 6–128 karakter.' }, 400);
+          }
+          nextHash = hashSecret(newPassword);
+        }
+
+        const { data: updated, error } = await supabase
+          .from('teachers')
+          .update({ name: nextName, email: nextEmail, role: nextRole, password_hash: nextHash })
+          .eq('id', targetId)
+          .select('id, name, email, role, created_at')
+          .single();
+
+        if (error || !updated) {
+          return jsonResponse(req, { error: `Email "${nextEmail}" sudah digunakan akun lain.` }, 409);
+        }
+        return jsonResponse(req, { teacher: updated });
+      }
+
+      if (method === 'DELETE') {
+        if (targetId === auth.teacher!.teacherId) {
+          return jsonResponse(req, { error: 'Anda tidak dapat menghapus akun yang sedang digunakan login.' }, 400);
+        }
+
+        const { data: target } = await supabase
+          .from('teachers')
+          .select('id, role')
+          .eq('id', targetId)
+          .maybeSingle();
+
+        if (!target) {
+          return jsonResponse(req, { error: 'Akun guru tidak ditemukan.' }, 404);
+        }
+
+        if (target.role === 'ADMIN') {
+          const { count: adminCount } = await supabase
+            .from('teachers')
+            .select('id', { count: 'exact', head: true })
+            .eq('role', 'ADMIN');
+          if ((adminCount || 0) <= 1) {
+            return jsonResponse(req, { error: 'Tidak dapat menghapus satu-satunya akun Admin.' }, 400);
+          }
+        }
+
+        await supabase.from('teachers').delete().eq('id', targetId);
+        return jsonResponse(req, { success: true });
+      }
+    }
+
+    const adminTeacherResetMatch = path.match(/^\/admin\/teachers\/(\d+)\/reset-password$/);
+    if (method === 'POST' && adminTeacherResetMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const targetId = Number(adminTeacherResetMatch[1]);
+
+      const { data: teacher } = await supabase
+        .from('teachers')
+        .select('id, name, email')
+        .eq('id', targetId)
+        .maybeSingle();
+
+      if (!teacher) {
+        return jsonResponse(req, { error: 'Akun guru tidak ditemukan.' }, 404);
+      }
+
+      const { customPassword } = await readJsonBody<{ customPassword?: string }>(req);
+      const trimmed = (customPassword || '').trim();
+      if (trimmed && (trimmed.length < 6 || trimmed.length > 128)) {
+        return jsonResponse(req, { error: 'Kata sandi khusus harus terdiri dari 6–128 karakter.' }, 400);
+      }
+
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+      let generated = '';
+      for (let i = 0; i < 8; i++) generated += chars[crypto.randomInt(0, chars.length)];
+      const newPassword = trimmed || generated;
+
+      await supabase
+        .from('teachers')
+        .update({ password_hash: hashSecret(newPassword) })
+        .eq('id', targetId);
+
+      return jsonResponse(req, {
+        teacherId: teacher.id,
+        name: teacher.name,
+        email: teacher.email,
+        newPassword,
+      });
+    }
+
+    const adminTeacherAssignMatch = path.match(/^\/admin\/teachers\/(\d+)\/assignments$/);
+    if (method === 'POST' && adminTeacherAssignMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const targetId = Number(adminTeacherAssignMatch[1]);
+      const { subjectId, classId } = await readJsonBody<{ subjectId?: number; classId?: number }>(req);
+      if (!subjectId || !classId) {
+        return jsonResponse(req, { error: 'Mata pelajaran dan kelas wajib dipilih.' }, 400);
+      }
+
+      const { data, error } = await supabase
+        .from('teacher_assignments')
+        .insert({ teacher_id: targetId, subject_id: Number(subjectId), class_id: Number(classId) })
+        .select('id')
+        .single();
+
+      if (error || !data) {
+        return jsonResponse(
+          req,
+          { error: 'Penugasan mata pelajaran & kelas tersebut sudah terdaftar untuk guru ini.' },
+          409
+        );
+      }
+      return jsonResponse(req, { id: data.id }, 201);
+    }
+
+    const adminAssignDeleteMatch = path.match(/^\/admin\/assignments\/(\d+)$/);
+    if (method === 'DELETE' && adminAssignDeleteMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const assignmentId = Number(adminAssignDeleteMatch[1]);
+      const { data: deleted } = await supabase
+        .from('teacher_assignments')
+        .delete()
+        .eq('id', assignmentId)
+        .select('id');
+
+      if (!deleted || deleted.length === 0) {
+        return jsonResponse(req, { error: 'Penugasan tidak ditemukan.' }, 404);
+      }
+      return jsonResponse(req, { success: true });
+    }
+
     // 2. EXAM PACKAGES, ROTATION & QR
     if (method === 'GET' && path === '/packages') {
       const auth = await requireTeacherAuth(req, supabase);
@@ -1027,6 +1597,7 @@ Deno.serve(async (req: Request) => {
       if (method === 'PUT') {
         const {
           title,
+          subjectId,
           classId,
           durationMinutes,
           maxViolations,
@@ -1035,6 +1606,7 @@ Deno.serve(async (req: Request) => {
           isActive,
         } = await readJsonBody<{
           title?: string;
+          subjectId?: number;
           classId?: number;
           durationMinutes?: number;
           maxViolations?: number;
@@ -1053,10 +1625,17 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
         }
 
+        if (auth.teacher!.role !== 'ADMIN' && existing.teacher_id !== auth.teacher!.teacherId) {
+          return jsonResponse(req, { error: 'Anda tidak memiliki akses untuk mengubah paket ujian ini.' }, 403);
+        }
+
+        const nextSubjectId = subjectId ? Number(subjectId) : existing.subject_id;
+
         await supabase
           .from('exam_packages')
           .update({
             title: title?.trim() || existing.title,
+            subject_id: nextSubjectId,
             class_id: classId ? Number(classId) : existing.class_id,
             duration_minutes: durationMinutes
               ? Math.max(5, Math.min(300, Number(durationMinutes)))
@@ -1081,19 +1660,29 @@ Deno.serve(async (req: Request) => {
           })
           .eq('id', pkgId);
 
+        if (nextSubjectId !== existing.subject_id) {
+          await supabase.from('questions').update({ subject_id: nextSubjectId }).eq('package_id', pkgId);
+        }
+
         return jsonResponse(req, { success: true });
       }
 
       if (method === 'DELETE') {
-        const { data: deleted } = await supabase
+        const { data: existing } = await supabase
           .from('exam_packages')
-          .delete()
+          .select('id, teacher_id')
           .eq('id', pkgId)
-          .select('id');
+          .maybeSingle();
 
-        if (!deleted || deleted.length === 0) {
+        if (!existing) {
           return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
         }
+
+        if (auth.teacher!.role !== 'ADMIN' && existing.teacher_id !== auth.teacher!.teacherId) {
+          return jsonResponse(req, { error: 'Anda tidak memiliki akses untuk menghapus paket ujian ini.' }, 403);
+        }
+
+        await supabase.from('exam_packages').delete().eq('id', pkgId);
         return jsonResponse(req, { success: true });
       }
     }

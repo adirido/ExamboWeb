@@ -84,7 +84,7 @@ jobs:
           if [ -n "$CUSTOM_ALLOWED_ORIGIN" ]; then
             SECRET_ARGS+=("ALLOWED_ORIGIN=$CUSTOM_ALLOWED_ORIGIN")
           else
-            echo "::notice::ALLOWED_ORIGIN tidak diset; Edge Function akan otomatis mengizinkan origin localhost, .github.io, .vercel.app, dan .run.app."
+            echo "::notice::ALLOWED_ORIGIN tidak diset; Edge Function akan otomatis mengizinkan origin localhost, .github.io, .vercel.app, .pages.dev, dan .run.app."
           fi
 
           if [ ${#SECRET_ARGS[@]} -gt 0 ]; then

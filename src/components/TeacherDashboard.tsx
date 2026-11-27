@@ -11,6 +11,7 @@ import {
   ExternalLink,
   KeyRound,
   X,
+  UserCog,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type {
@@ -26,8 +27,9 @@ import { QuestionBankView } from './QuestionBankView';
 import { StudentsView } from './StudentsView';
 import { GradeRecapView } from './GradeRecapView';
 import { ExambroDocsView } from './ExambroDocsView';
+import { AdminManagementView } from './AdminManagementView';
 
-type DashboardTab = 'packages' | 'monitoring' | 'questions' | 'students' | 'recap' | 'exambro';
+type DashboardTab = 'packages' | 'monitoring' | 'questions' | 'students' | 'recap' | 'exambro' | 'admin';
 
 interface TeacherDashboardProps {
   token: string;
@@ -43,6 +45,7 @@ const TAB_LABELS: Record<DashboardTab, string> = {
   students: 'Siswa & PIN Semester',
   recap: 'Rekap Nilai & CSV',
   exambro: 'Penugasan & API Exambro',
+  admin: 'Manajemen Guru & Mapel',
 };
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
@@ -136,6 +139,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     { id: 'students', label: 'Siswa & PIN', icon: <Users className="w-4 h-4" /> },
     { id: 'recap', label: 'Rekap Nilai', icon: <FileSpreadsheet className="w-4 h-4" /> },
     { id: 'exambro', label: 'API Exambro', icon: <Smartphone className="w-4 h-4" /> },
+    ...(teacher.role === 'ADMIN'
+      ? [{ id: 'admin' as const, label: 'Guru & Mapel', icon: <UserCog className="w-4 h-4" /> }]
+      : []),
   ];
 
   return (
@@ -345,6 +351,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   subjects={subjects}
                   classes={classes}
                   onRefreshContext={loadAll}
+                />
+              )}
+
+              {activeTab === 'admin' && teacher.role === 'ADMIN' && (
+                <AdminManagementView
+                  token={token}
+                  currentTeacherId={teacher.id}
+                  subjects={subjects}
+                  classes={classes}
+                  onContextChanged={loadAll}
                 />
               )}
               </>

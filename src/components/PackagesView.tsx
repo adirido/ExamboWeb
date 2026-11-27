@@ -12,6 +12,7 @@ import {
   X,
   ShieldAlert,
   BookOpen,
+  Pencil,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type { ClassItem, ExamPackage, QrPayloadResponse, SubjectItem, TeacherAssignment } from '../types';
@@ -60,6 +61,18 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   const [isActive, setIsActive] = useState(true);
   const [cloneFromPackageId, setCloneFromPackageId] = useState<number | ''>('');
   const [creating, setCreating] = useState(false);
+
+  // Edit form state
+  const [editingPackage, setEditingPackage] = useState<ExamPackage | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editSubjectId, setEditSubjectId] = useState<number>(1);
+  const [editClassId, setEditClassId] = useState<number>(1);
+  const [editDurationMinutes, setEditDurationMinutes] = useState(60);
+  const [editMaxViolations, setEditMaxViolations] = useState(3);
+  const [editShuffleQuestions, setEditShuffleQuestions] = useState(true);
+  const [editShuffleOptions, setEditShuffleOptions] = useState(true);
+  const [editIsActive, setEditIsActive] = useState(true);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const filtered = packages.filter((p) => {
     if (filterClass !== 'ALL' && String(p.class_id) !== filterClass) return false;
@@ -150,6 +163,45 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
       setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal membuat paket ujian.' });
     } finally {
       setCreating(false);
+    }
+  }
+
+  function openEditModal(pkg: ExamPackage) {
+    setEditingPackage(pkg);
+    setEditTitle(pkg.title);
+    setEditSubjectId(pkg.subject_id);
+    setEditClassId(pkg.class_id);
+    setEditDurationMinutes(pkg.duration_minutes);
+    setEditMaxViolations(pkg.max_violations);
+    setEditShuffleQuestions(pkg.shuffle_questions === 1);
+    setEditShuffleOptions(pkg.shuffle_options === 1);
+    setEditIsActive(pkg.is_active === 1);
+    setFeedback(null);
+  }
+
+  async function handleEditSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingPackage) return;
+    setSavingEdit(true);
+    setFeedback(null);
+    try {
+      await teacherApi.updatePackage(token, editingPackage.id, {
+        title: editTitle.trim(),
+        subjectId: editSubjectId,
+        classId: editClassId,
+        durationMinutes: editDurationMinutes,
+        maxViolations: editMaxViolations,
+        shuffleQuestions: editShuffleQuestions,
+        shuffleOptions: editShuffleOptions,
+        isActive: editIsActive,
+      });
+      setEditingPackage(null);
+      await onRefresh();
+      setFeedback({ type: 'ok', text: `Paket ujian "${editTitle.trim()}" berhasil diperbarui.` });
+    } catch (err) {
+      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memperbarui paket ujian.' });
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -391,14 +443,25 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(pkg.id)}
-                      className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
-                      title="Hapus Paket Ujian"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(pkg)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                        title="Edit Paket Ujian"
+                      >
+                        <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(pkg.id)}
+                        className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                        title="Hapus Paket Ujian"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -549,6 +612,140 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
                 >
                   {creating ? 'Menyimpan...' : 'Simpan Paket Ujian'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Package Modal */}
+      {editingPackage && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-lg font-bold text-slate-900">Edit Paket Ujian</h3>
+              <button
+                type="button"
+                onClick={() => setEditingPackage(null)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleEditSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Judul Paket Ujian</label>
+                <input
+                  type="text"
+                  required
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Mata Pelajaran</label>
+                  <select
+                    value={editSubjectId}
+                    onChange={(e) => setEditSubjectId(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                  >
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Kelas Target</label>
+                  <select
+                    value={editClassId}
+                    onChange={(e) => setEditClassId(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                  >
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        Kelas {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Durasi (Menit)</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    value={editDurationMinutes}
+                    onChange={(e) => setEditDurationMinutes(Number(e.target.value))}
+                    className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Batas Pelanggaran Terkunci</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={editMaxViolations}
+                    onChange={(e) => setEditMaxViolations(Number(e.target.value))}
+                    className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editShuffleQuestions}
+                    onChange={(e) => setEditShuffleQuestions(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-700"
+                  />
+                  Acak urutan nomor soal per siswa (dikunci di server)
+                </label>
+                <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editShuffleOptions}
+                    onChange={(e) => setEditShuffleOptions(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-700"
+                  />
+                  Acak urutan pilihan jawaban (A/B/C/D) per siswa
+                </label>
+                <label className="flex items-center gap-2.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editIsActive}
+                    onChange={(e) => setEditIsActive(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-700"
+                  />
+                  Status paket ujian aktif
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingPackage(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
+                >
+                  {savingEdit ? 'Menyimpan...' : 'Simpan Perubahan'}
                 </button>
               </div>
             </form>

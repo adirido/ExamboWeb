@@ -322,6 +322,585 @@ export function createApiRouter(): express.Router {
   });
 
   // ==========================
+  // 1B. ADMIN: TEACHERS & SUBJECTS MANAGEMENT
+  // ==========================
+  function generateTeacherPassword(length = 8): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      out += chars[crypto.randomInt(0, chars.length)];
+    }
+    return out;
+  }
+
+  function requireAdminRole(req: AuthenticatedTeacherRequest, res: Response): boolean {
+    if (req.teacher?.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' });
+      return false;
+    }
+    return true;
+  }
+
+  router.get('/subjects', requireTeacherAuth, (_req: AuthenticatedTeacherRequest, res: Response) => {
+    const rows = db
+      .prepare(`
+        SELECT s.id, s.code, s.name, s.description,
+               (SELECT COUNT(*) FROM exam_packages ep WHERE ep.subject_id = s.id) AS package_count,
+               (SELECT COUNT(*) FROM questions q WHERE q.subject_id = s.id) AS question_count
+        FROM subjects s
+        ORDER BY s.name ASC
+      `)
+      .all();
+    res.json({ subjects: rows });
+  });
+
+  router.post('/subjects', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const { code, name, description = '' } = req.body as {
+      code?: string;
+      name?: string;
+      description?: string;
+    };
+
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    const cleanName = (name || '').trim();
+    if (!cleanCode || cleanCode.length < 2 || cleanCode.length > 16 || !cleanName) {
+      res.status(400).json({ error: 'Kode mapel (2–16 huruf/angka) dan nama mata pelajaran wajib diisi.' });
+      return;
+    }
+
+    try {
+      const info = db
+        .prepare('INSERT INTO subjects (code, name, description) VALUES (?, ?, ?)')
+        .run(cleanCode, cleanName, description.trim());
+      const created = db.prepare('SELECT * FROM subjects WHERE id = ?').get(Number(info.lastInsertRowid));
+      res.status(201).json({ subject: created });
+    } catch {
+      res.status(409).json({ error: `Kode mata pelajaran "${cleanCode}" sudah terdaftar.` });
+    }
+  });
+
+  router.put('/subjects/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const subjectId = Number(req.params.id);
+    const existing = db.prepare('SELECT * FROM subjects WHERE id = ?').get(subjectId) as
+      | { id: number; code: string; name: string; description: string }
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Mata pelajaran tidak ditemukan.' });
+      return;
+    }
+
+    const { code, name, description } = req.body as {
+      code?: string;
+      name?: string;
+      description?: string;
+    };
+    const nextCode =
+      code !== undefined ? code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '') : existing.code;
+    const nextName = name !== undefined ? name.trim() : existing.name;
+    const nextDesc = description !== undefined ? description.trim() : existing.description;
+
+    if (!nextCode || nextCode.length < 2 || nextCode.length > 16 || !nextName) {
+      res.status(400).json({ error: 'Kode mapel (2–16 huruf/angka) dan nama mata pelajaran wajib diisi.' });
+      return;
+    }
+
+    try {
+      db.prepare('UPDATE subjects SET code = ?, name = ?, description = ? WHERE id = ?').run(
+        nextCode,
+        nextName,
+        nextDesc,
+        subjectId
+      );
+      const updated = db.prepare('SELECT * FROM subjects WHERE id = ?').get(subjectId);
+      res.json({ subject: updated });
+    } catch {
+      res.status(409).json({ error: `Kode mata pelajaran "${nextCode}" sudah digunakan mapel lain.` });
+    }
+  });
+
+  router.delete('/subjects/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const subjectId = Number(req.params.id);
+    const usedPackages = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM exam_packages WHERE subject_id = ?').get(subjectId) as { cnt: number }
+    ).cnt;
+
+    if (usedPackages > 0) {
+      res.status(409).json({
+        error: `Mata pelajaran tidak dapat dihapus karena masih digunakan oleh ${usedPackages} paket ujian.`,
+      });
+      return;
+    }
+
+    const info = db.prepare('DELETE FROM subjects WHERE id = ?').run(subjectId);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Mata pelajaran tidak ditemukan.' });
+      return;
+    }
+    res.json({ success: true });
+  });
+
+  router.get('/admin/teachers', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const teachers = db
+      .prepare(`
+        SELECT t.id, t.name, t.email, t.role, t.created_at,
+               (SELECT COUNT(*) FROM exam_packages ep WHERE ep.teacher_id = t.id) AS package_count
+        FROM teachers t
+        ORDER BY CASE t.role WHEN 'ADMIN' THEN 0 ELSE 1 END, t.name ASC
+      `)
+      .all() as Array<{
+      id: number;
+      name: string;
+      email: string;
+      role: 'TEACHER' | 'ADMIN';
+      created_at: string;
+      package_count: number;
+    }>;
+
+    const allAssignments = db
+      .prepare(`
+        SELECT ta.id, ta.teacher_id, ta.subject_id, ta.class_id,
+               s.code AS subject_code, s.name AS subject_name,
+               c.name AS class_name, c.grade_level
+        FROM teacher_assignments ta
+        JOIN subjects s ON s.id = ta.subject_id
+        JOIN classes c ON c.id = ta.class_id
+        ORDER BY s.name ASC, c.name ASC
+      `)
+      .all() as Array<{
+      id: number;
+      teacher_id: number;
+      subject_id: number;
+      class_id: number;
+      subject_code: string;
+      subject_name: string;
+      class_name: string;
+      grade_level: number;
+    }>;
+
+    const result = teachers.map((t) => ({
+      ...t,
+      assignments: allAssignments.filter((a) => a.teacher_id === t.id),
+    }));
+
+    res.json({ teachers: result });
+  });
+
+  router.post('/admin/teachers', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const { name, email, password, role = 'TEACHER' } = req.body as {
+      name?: string;
+      email?: string;
+      password?: string;
+      role?: 'TEACHER' | 'ADMIN';
+    };
+
+    const cleanName = (name || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanRole = role === 'ADMIN' ? 'ADMIN' : 'TEACHER';
+
+    if (!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Nama lengkap dan format email guru yang valid wajib diisi.' });
+      return;
+    }
+    if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
+      res.status(400).json({ error: 'Kata sandi awal harus terdiri dari 6–128 karakter.' });
+      return;
+    }
+
+    try {
+      const info = db
+        .prepare('INSERT INTO teachers (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
+        .run(cleanName, cleanEmail, hashSecret(password), cleanRole);
+
+      const created = db
+        .prepare('SELECT id, name, email, role, created_at FROM teachers WHERE id = ?')
+        .get(Number(info.lastInsertRowid));
+      res.status(201).json({ teacher: created });
+    } catch {
+      res.status(409).json({ error: `Email "${cleanEmail}" sudah terdaftar.` });
+    }
+  });
+
+  router.put('/admin/teachers/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const targetId = Number(req.params.id);
+    const existing = db
+      .prepare('SELECT id, name, email, role, password_hash FROM teachers WHERE id = ?')
+      .get(targetId) as
+      | { id: number; name: string; email: string; role: 'TEACHER' | 'ADMIN'; password_hash: string }
+      | undefined;
+
+    if (!existing) {
+      res.status(404).json({ error: 'Akun guru tidak ditemukan.' });
+      return;
+    }
+
+    const { name, email, role, newPassword } = req.body as {
+      name?: string;
+      email?: string;
+      role?: 'TEACHER' | 'ADMIN';
+      newPassword?: string;
+    };
+
+    const nextName = name !== undefined ? name.trim() : existing.name;
+    const nextEmail = email !== undefined ? email.trim().toLowerCase() : existing.email;
+    const nextRole = role === 'ADMIN' || role === 'TEACHER' ? role : existing.role;
+
+    if (!nextName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      res.status(400).json({ error: 'Nama lengkap dan email yang valid wajib diisi.' });
+      return;
+    }
+
+    if (existing.role === 'ADMIN' && nextRole !== 'ADMIN') {
+      const adminCount = (
+        db.prepare(`SELECT COUNT(*) AS cnt FROM teachers WHERE role = 'ADMIN'`).get() as { cnt: number }
+      ).cnt;
+      if (adminCount <= 1) {
+        res.status(400).json({ error: 'Tidak dapat menurunkan peran Admin terakhir di sistem.' });
+        return;
+      }
+    }
+
+    let nextHash = existing.password_hash;
+    if (typeof newPassword === 'string' && newPassword.length > 0) {
+      if (newPassword.length < 6 || newPassword.length > 128) {
+        res.status(400).json({ error: 'Kata sandi baru harus terdiri dari 6–128 karakter.' });
+        return;
+      }
+      nextHash = hashSecret(newPassword);
+    }
+
+    try {
+      db.prepare('UPDATE teachers SET name = ?, email = ?, role = ?, password_hash = ? WHERE id = ?').run(
+        nextName,
+        nextEmail,
+        nextRole,
+        nextHash,
+        targetId
+      );
+      const updated = db
+        .prepare('SELECT id, name, email, role, created_at FROM teachers WHERE id = ?')
+        .get(targetId);
+      res.json({ teacher: updated });
+    } catch {
+      res.status(409).json({ error: `Email "${nextEmail}" sudah digunakan akun lain.` });
+    }
+  });
+
+  router.post(
+    '/admin/teachers/:id/reset-password',
+    requireTeacherAuth,
+    (req: AuthenticatedTeacherRequest, res: Response) => {
+      if (!requireAdminRole(req, res)) return;
+      const targetId = Number(req.params.id);
+      const teacher = db
+        .prepare('SELECT id, name, email FROM teachers WHERE id = ?')
+        .get(targetId) as { id: number; name: string; email: string } | undefined;
+
+      if (!teacher) {
+        res.status(404).json({ error: 'Akun guru tidak ditemukan.' });
+        return;
+      }
+
+      const { customPassword } = (req.body || {}) as { customPassword?: string };
+      const trimmed = (customPassword || '').trim();
+      if (trimmed && (trimmed.length < 6 || trimmed.length > 128)) {
+        res.status(400).json({ error: 'Kata sandi khusus harus terdiri dari 6–128 karakter.' });
+        return;
+      }
+
+      const newPassword = trimmed || generateTeacherPassword(8);
+      db.prepare('UPDATE teachers SET password_hash = ? WHERE id = ?').run(hashSecret(newPassword), targetId);
+
+      res.json({
+        teacherId: teacher.id,
+        name: teacher.name,
+        email: teacher.email,
+        newPassword,
+      });
+    }
+  );
+
+  router.delete('/admin/teachers/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const targetId = Number(req.params.id);
+
+    if (targetId === req.teacher!.teacherId) {
+      res.status(400).json({ error: 'Anda tidak dapat menghapus akun yang sedang digunakan login.' });
+      return;
+    }
+
+    const target = db.prepare('SELECT id, role FROM teachers WHERE id = ?').get(targetId) as
+      | { id: number; role: string }
+      | undefined;
+    if (!target) {
+      res.status(404).json({ error: 'Akun guru tidak ditemukan.' });
+      return;
+    }
+
+    if (target.role === 'ADMIN') {
+      const adminCount = (
+        db.prepare(`SELECT COUNT(*) AS cnt FROM teachers WHERE role = 'ADMIN'`).get() as { cnt: number }
+      ).cnt;
+      if (adminCount <= 1) {
+        res.status(400).json({ error: 'Tidak dapat menghapus satu-satunya akun Admin.' });
+        return;
+      }
+    }
+
+    db.prepare('DELETE FROM teachers WHERE id = ?').run(targetId);
+    res.json({ success: true });
+  });
+
+  router.post(
+    '/admin/teachers/:id/assignments',
+    requireTeacherAuth,
+    (req: AuthenticatedTeacherRequest, res: Response) => {
+      if (!requireAdminRole(req, res)) return;
+      const targetId = Number(req.params.id);
+      const { subjectId, classId } = req.body as { subjectId?: number; classId?: number };
+      if (!subjectId || !classId) {
+        res.status(400).json({ error: 'Mata pelajaran dan kelas wajib dipilih.' });
+        return;
+      }
+
+      try {
+        const info = db
+          .prepare('INSERT INTO teacher_assignments (teacher_id, subject_id, class_id) VALUES (?, ?, ?)')
+          .run(targetId, Number(subjectId), Number(classId));
+        res.status(201).json({ id: Number(info.lastInsertRowid) });
+      } catch {
+        res.status(409).json({ error: 'Penugasan mata pelajaran & kelas tersebut sudah terdaftar untuk guru ini.' });
+      }
+    }
+  );
+
+  router.delete(
+    '/admin/assignments/:id',
+    requireTeacherAuth,
+    (req: AuthenticatedTeacherRequest, res: Response) => {
+      if (!requireAdminRole(req, res)) return;
+      const assignmentId = Number(req.params.id);
+      const info = db.prepare('DELETE FROM teacher_assignments WHERE id = ?').run(assignmentId);
+      if (info.changes === 0) {
+        res.status(404).json({ error: 'Penugasan tidak ditemukan.' });
+        return;
+      }
+      res.json({ success: true });
+    }
+  );
+
+  router.post(
+    '/admin/teachers/import',
+    requireTeacherAuth,
+    (req: AuthenticatedTeacherRequest, res: Response) => {
+      if (!requireAdminRole(req, res)) return;
+      const { rawText, updateExisting = false } = req.body as {
+        rawText?: string;
+        updateExisting?: boolean;
+      };
+
+      if (!rawText || !rawText.trim()) {
+        res.status(400).json({ error: 'Data teks atau file CSV guru tidak boleh kosong.' });
+        return;
+      }
+
+      const lines = rawText
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+
+      if (lines.length === 0) {
+        res.status(400).json({ error: 'Tidak ada baris data guru yang ditemukan.' });
+        return;
+      }
+
+      function splitDelimitedLine(line: string): string[] {
+        let delimiter = ',';
+        if (line.includes('\t')) delimiter = '\t';
+        else if (line.includes(';')) delimiter = ';';
+
+        const cells: string[] = [];
+        let current = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+              current += '"';
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (ch === delimiter && !inQuotes) {
+            cells.push(current.trim());
+            current = '';
+          } else {
+            current += ch;
+          }
+        }
+        cells.push(current.trim());
+        return cells;
+      }
+
+      const importedCredentials: Array<{
+        name: string;
+        email: string;
+        role: 'TEACHER' | 'ADMIN';
+        password: string;
+        action: 'CREATED' | 'UPDATED';
+      }> = [];
+      const skipped: Array<{ lineNumber: number; email: string; name: string; reason: string }> = [];
+      const errors: Array<{ lineNumber: number; raw: string; reason: string }> = [];
+
+      const findStmt = db.prepare('SELECT id, name, email, role FROM teachers WHERE email = ?');
+      const insertStmt = db.prepare(
+        'INSERT INTO teachers (name, email, password_hash, role) VALUES (?, ?, ?, ?)'
+      );
+      const updateInfoStmt = db.prepare('UPDATE teachers SET name = ?, role = ? WHERE id = ?');
+      const updateWithPassStmt = db.prepare(
+        'UPDATE teachers SET name = ?, role = ?, password_hash = ? WHERE id = ?'
+      );
+
+      const runImport = db.transaction(() => {
+        let processedDataRows = 0;
+
+        for (let idx = 0; idx < lines.length; idx++) {
+          const lineNumber = idx + 1;
+          const line = lines[idx];
+          const cols = splitDelimitedLine(line);
+
+          if (idx === 0) {
+            const c0 = (cols[0] || '').toLowerCase();
+            const c1 = (cols[1] || '').toLowerCase();
+            if (c0.includes('nama') || c0 === 'name' || c1.includes('email')) {
+              continue;
+            }
+          }
+
+          processedDataRows++;
+
+          if (cols.length < 2) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, Email).',
+            });
+            continue;
+          }
+
+          const name = cols[0].trim();
+          const email = cols[1].trim().toLowerCase();
+          const rawRole = (cols[2] || 'TEACHER').trim().toUpperCase();
+          const rawPass = (cols[3] || '').trim();
+
+          if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: 'Nama lengkap atau format email tidak valid.',
+            });
+            continue;
+          }
+
+          if (rawRole && !['TEACHER', 'GURU', 'ADMIN'].includes(rawRole)) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: 'Kolom Role harus berupa TEACHER (atau GURU) atau ADMIN.',
+            });
+            continue;
+          }
+
+          const role: 'TEACHER' | 'ADMIN' = rawRole === 'ADMIN' ? 'ADMIN' : 'TEACHER';
+
+          if (rawPass && (rawPass.length < 6 || rawPass.length > 128)) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: 'Password harus terdiri dari 6–128 karakter (atau kosongkan untuk otomatis).',
+            });
+            continue;
+          }
+
+          const existing = findStmt.get(email) as
+            | { id: number; name: string; email: string; role: 'TEACHER' | 'ADMIN' }
+            | undefined;
+
+          if (existing && !updateExisting) {
+            skipped.push({
+              lineNumber,
+              email,
+              name,
+              reason: 'Email sudah terdaftar (lewati duplikat).',
+            });
+            continue;
+          }
+
+          if (existing && updateExisting) {
+            if (existing.role === 'ADMIN' && role !== 'ADMIN') {
+              const adminCount = (
+                db.prepare(`SELECT COUNT(*) AS cnt FROM teachers WHERE role = 'ADMIN'`).get() as { cnt: number }
+              ).cnt;
+              if (adminCount <= 1) {
+                errors.push({
+                  lineNumber,
+                  raw: line,
+                  reason: 'Tidak dapat menurunkan peran Admin terakhir di sistem.',
+                });
+                continue;
+              }
+            }
+
+            if (rawPass) {
+              updateWithPassStmt.run(name, role, hashSecret(rawPass), existing.id);
+              importedCredentials.push({ name, email, role, password: rawPass, action: 'UPDATED' });
+            } else {
+              updateInfoStmt.run(name, role, existing.id);
+              importedCredentials.push({
+                name,
+                email,
+                role,
+                password: 'Tetap (Tersimpan)',
+                action: 'UPDATED',
+              });
+            }
+          } else {
+            const plainPass = rawPass || generateTeacherPassword(8);
+            insertStmt.run(name, email, hashSecret(plainPass), role);
+            importedCredentials.push({ name, email, role, password: plainPass, action: 'CREATED' });
+          }
+        }
+
+        return processedDataRows;
+      });
+
+      const totalRows = runImport();
+      const createdCount = importedCredentials.filter((c) => c.action === 'CREATED').length;
+      const updatedCount = importedCredentials.filter((c) => c.action === 'UPDATED').length;
+
+      res.json({
+        summary: {
+          totalRows,
+          createdCount,
+          updatedCount,
+          skippedCount: skipped.length,
+          errorCount: errors.length,
+        },
+        importedCredentials,
+        skipped,
+        errors,
+      });
+    }
+  );
+
+  // ==========================
   // 2. EXAM PACKAGES & TOKEN ROTATION & QR
   // ==========================
   router.get('/packages', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
@@ -457,8 +1036,18 @@ export function createApiRouter(): express.Router {
 
   router.put('/packages/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
-    const { title, classId, durationMinutes, maxViolations, shuffleQuestions, shuffleOptions, isActive } = req.body as {
+    const {
+      title,
+      subjectId,
+      classId,
+      durationMinutes,
+      maxViolations,
+      shuffleQuestions,
+      shuffleOptions,
+      isActive,
+    } = req.body as {
       title?: string;
+      subjectId?: number;
       classId?: number;
       durationMinutes?: number;
       maxViolations?: number;
@@ -473,9 +1062,17 @@ export function createApiRouter(): express.Router {
       return;
     }
 
+    if (req.teacher!.role !== 'ADMIN' && existing.teacher_id !== req.teacher!.teacherId) {
+      res.status(403).json({ error: 'Anda tidak memiliki akses untuk mengubah paket ujian ini.' });
+      return;
+    }
+
+    const nextSubjectId = subjectId ? Number(subjectId) : existing.subject_id;
+
     db.prepare(`
       UPDATE exam_packages
       SET title = ?,
+          subject_id = ?,
           class_id = ?,
           duration_minutes = ?,
           max_violations = ?,
@@ -485,6 +1082,7 @@ export function createApiRouter(): express.Router {
       WHERE id = ?
     `).run(
       title?.trim() || existing.title,
+      nextSubjectId,
       classId ? Number(classId) : existing.class_id,
       durationMinutes ? Math.max(5, Math.min(300, Number(durationMinutes))) : existing.duration_minutes,
       maxViolations ? Math.max(1, Math.min(20, Number(maxViolations))) : existing.max_violations,
@@ -494,16 +1092,27 @@ export function createApiRouter(): express.Router {
       pkgId
     );
 
+    if (nextSubjectId !== existing.subject_id) {
+      db.prepare('UPDATE questions SET subject_id = ? WHERE package_id = ?').run(nextSubjectId, pkgId);
+    }
+
     res.json({ success: true });
   });
 
   router.delete('/packages/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
-    const info = db.prepare('DELETE FROM exam_packages WHERE id = ?').run(pkgId);
-    if (info.changes === 0) {
+    const existing = db.prepare('SELECT id, teacher_id FROM exam_packages WHERE id = ?').get(pkgId) as
+      | { id: number; teacher_id: number }
+      | undefined;
+    if (!existing) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
       return;
     }
+    if (req.teacher!.role !== 'ADMIN' && existing.teacher_id !== req.teacher!.teacherId) {
+      res.status(403).json({ error: 'Anda tidak memiliki akses untuk menghapus paket ujian ini.' });
+      return;
+    }
+    db.prepare('DELETE FROM exam_packages WHERE id = ?').run(pkgId);
     res.json({ success: true });
   });
 

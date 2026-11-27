@@ -15,11 +15,51 @@ export interface TeacherAssignment {
   grade_level: number;
 }
 
+export interface TeacherAccountRecord {
+  id: number;
+  name: string;
+  email: string;
+  role: 'TEACHER' | 'ADMIN';
+  created_at: string;
+  package_count?: number;
+  assignments?: TeacherAssignment[];
+}
+
+export interface ImportTeachersResult {
+  summary: {
+    totalRows: number;
+    createdCount: number;
+    updatedCount: number;
+    skippedCount: number;
+    errorCount: number;
+  };
+  importedCredentials: Array<{
+    name: string;
+    email: string;
+    role: 'TEACHER' | 'ADMIN';
+    password: string;
+    action: 'CREATED' | 'UPDATED';
+  }>;
+  skipped: Array<{
+    lineNumber: number;
+    email: string;
+    name: string;
+    reason: string;
+  }>;
+  errors: Array<{
+    lineNumber: number;
+    raw: string;
+    reason: string;
+  }>;
+}
+
 export interface SubjectItem {
   id: number;
   code: string;
   name: string;
   description: string;
+  package_count?: number;
+  question_count?: number;
 }
 
 export interface ClassItem {

@@ -99,6 +99,7 @@ export const teacherApi = {
     id: number,
     body: Partial<{
       title: string;
+      subjectId: number;
       classId: number;
       durationMinutes: number;
       maxViolations: number;
@@ -117,6 +118,114 @@ export const teacherApi = {
 
   async deletePackage(token: string, id: number) {
     const res = await fetch(resolveApiUrl(`/api/packages/${id}`), {
+      method: 'DELETE',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean }>(res);
+  },
+
+  async getSubjects(token: string) {
+    const res = await fetch(resolveApiUrl('/api/subjects'), {
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ subjects: import('./types').SubjectItem[] }>(res);
+  },
+
+  async createSubject(token: string, body: { code: string; name: string; description?: string }) {
+    const res = await fetch(resolveApiUrl('/api/subjects'), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ subject: import('./types').SubjectItem }>(res);
+  },
+
+  async updateSubject(token: string, id: number, body: { code?: string; name?: string; description?: string }) {
+    const res = await fetch(resolveApiUrl(`/api/subjects/${id}`), {
+      method: 'PUT',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ subject: import('./types').SubjectItem }>(res);
+  },
+
+  async deleteSubject(token: string, id: number) {
+    const res = await fetch(resolveApiUrl(`/api/subjects/${id}`), {
+      method: 'DELETE',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean }>(res);
+  },
+
+  async getAdminTeachers(token: string) {
+    const res = await fetch(resolveApiUrl('/api/admin/teachers'), {
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ teachers: import('./types').TeacherAccountRecord[] }>(res);
+  },
+
+  async createAdminTeacher(
+    token: string,
+    body: { name: string; email: string; password: string; role: 'TEACHER' | 'ADMIN' }
+  ) {
+    const res = await fetch(resolveApiUrl('/api/admin/teachers'), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ teacher: import('./types').TeacherAccountRecord }>(res);
+  },
+
+  async updateAdminTeacher(
+    token: string,
+    id: number,
+    body: { name?: string; email?: string; role?: 'TEACHER' | 'ADMIN'; newPassword?: string }
+  ) {
+    const res = await fetch(resolveApiUrl(`/api/admin/teachers/${id}`), {
+      method: 'PUT',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ teacher: import('./types').TeacherAccountRecord }>(res);
+  },
+
+  async resetAdminTeacherPassword(token: string, id: number, customPassword?: string) {
+    const res = await fetch(resolveApiUrl(`/api/admin/teachers/${id}/reset-password`), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(customPassword ? { customPassword } : {}),
+    });
+    return parseJsonResponse<{ teacherId: number; name: string; email: string; newPassword: string }>(res);
+  },
+
+  async deleteAdminTeacher(token: string, id: number) {
+    const res = await fetch(resolveApiUrl(`/api/admin/teachers/${id}`), {
+      method: 'DELETE',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean }>(res);
+  },
+
+  async importAdminTeachers(token: string, body: { rawText: string; updateExisting: boolean }) {
+    const res = await fetch(resolveApiUrl('/api/admin/teachers/import'), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<import('./types').ImportTeachersResult>(res);
+  },
+
+  async addTeacherAssignmentFor(token: string, teacherId: number, subjectId: number, classId: number) {
+    const res = await fetch(resolveApiUrl(`/api/admin/teachers/${teacherId}/assignments`), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ subjectId, classId }),
+    });
+    return parseJsonResponse<{ id: number }>(res);
+  },
+
+  async deleteTeacherAssignment(token: string, assignmentId: number) {
+    const res = await fetch(resolveApiUrl(`/api/admin/assignments/${assignmentId}`), {
       method: 'DELETE',
       headers: buildApiHeaders(token),
     });
