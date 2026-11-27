@@ -368,6 +368,7 @@ function resolveAllowedOrigin(req: Request): string {
         host === 'localhost' ||
         host === '127.0.0.1' ||
         host.endsWith('.github.io') ||
+        host.endsWith('.vercel.app') ||
         host.endsWith('.run.app')
       ) {
         return reqOrigin;
