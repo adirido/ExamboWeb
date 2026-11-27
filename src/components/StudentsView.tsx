@@ -426,15 +426,15 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
           loading && hasLoaded ? 'opacity-60' : 'opacity-100'
         }`}
       >
-        <div className="w-full overflow-x-auto md:overflow-x-hidden">
-          <table className="w-full min-w-[680px] md:min-w-0 table-fixed text-left border-collapse">
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-[880px] lg:min-w-0 table-fixed text-left border-collapse">
             <colgroup>
               <col className="w-[100px]" />
               <col />
               <col className="w-[82px]" />
-              <col className="w-[162px]" />
-              <col className="w-[152px]" />
-              <col className="w-[164px]" />
+              <col className="w-[136px]" />
+              <col className="w-[250px]" />
+              <col className="w-[156px]" />
             </colgroup>
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">
