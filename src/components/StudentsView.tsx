@@ -18,6 +18,9 @@ import {
   EyeOff,
   Lock,
   RefreshCw,
+  Pencil,
+  Trash2,
+  Printer,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type { ClassItem, ImportStudentsResult, StudentRecord } from '../types';
@@ -61,6 +64,20 @@ const ADMIN_TEMPLATE_CSV = [
 
 function generateRandomSixDigits(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function formatPinUpdatedAt(raw: string): string {
+  if (!raw) return '-';
+  const normalized = raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export const StudentsView: React.FC<StudentsViewProps> = ({
@@ -112,6 +129,21 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   const [importResult, setImportResult] = useState<ImportStudentsResult | null>(null);
   const [copiedBatchPins, setCopiedBatchPins] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Edit / Delete student state
+  const [editTargetStudent, setEditTargetStudent] = useState<StudentRecord | null>(null);
+  const [editNis, setEditNis] = useState('');
+  const [editName, setEditName] = useState('');
+  const [editClassId, setEditClassId] = useState<number>(classes[0]?.id || 1);
+  const [editModalError, setEditModalError] = useState<string | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [confirmDeleteStudentId, setConfirmDeleteStudentId] = useState<number | null>(null);
+  const [deletingStudentId, setDeletingStudentId] = useState<number | null>(null);
+
+  // Print participant cards modal state
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printCardHeader, setPrintCardHeader] = useState('Kartu Peserta Ujian Semester');
+  const [printShowPin, setPrintShowPin] = useState(true);
 
   useEffect(() => {
     loadStudents();
@@ -227,6 +259,66 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     navigator.clipboard?.writeText(`NIS: ${student.nis}\nPIN Semester: ${student.semester_pin}`);
     setCopiedRowId(student.id);
     setTimeout(() => setCopiedRowId(null), 1600);
+  }
+
+  function openEditStudentModal(student: StudentRecord) {
+    setEditTargetStudent(student);
+    setEditNis(student.nis);
+    setEditName(student.name);
+    setEditClassId(student.class_id);
+    setEditModalError(null);
+  }
+
+  async function handleSaveEditStudent(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editTargetStudent) return;
+    setEditModalError(null);
+    setSavingEdit(true);
+    try {
+      await teacherApi.updateStudent(token, editTargetStudent.id, {
+        nis: editNis.trim(),
+        name: editName.trim(),
+        classId: editClassId,
+      });
+      setEditTargetStudent(null);
+      await loadStudents();
+      if (onClassesChanged) {
+        await onClassesChanged();
+      }
+    } catch (err) {
+      setEditModalError(err instanceof Error ? err.message : 'Gagal memperbarui data siswa.');
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function handleDeleteStudent(studentId: number) {
+    if (!isAdmin) return;
+    setDeletingStudentId(studentId);
+    setError(null);
+    try {
+      await teacherApi.deleteStudent(token, studentId);
+      setConfirmDeleteStudentId(null);
+      await loadStudents();
+      if (onClassesChanged) {
+        await onClassesChanged();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menghapus data siswa.');
+    } finally {
+      setDeletingStudentId(null);
+    }
+  }
+
+  function handleTriggerPrintCards() {
+    document.body.classList.add('printing-cards');
+    const cleanup = () => {
+      document.body.classList.remove('printing-cards');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.print();
+    setTimeout(cleanup, 1200);
   }
 
   function openImportModal() {
@@ -399,6 +491,17 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
           <button
             type="button"
+            disabled={filteredStudents.length === 0}
+            onClick={() => setShowPrintModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            title="Cetak Kartu Peserta Ujian sesuai filter saat ini"
+          >
+            <Printer className="w-3.5 h-3.5 text-slate-700" aria-hidden="true" />
+            Cetak Kartu
+          </button>
+
+          <button
+            type="button"
             onClick={openImportModal}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
           >
@@ -427,14 +530,14 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         }`}
       >
         <div className="w-full overflow-x-auto">
-          <table className="w-full min-w-[880px] lg:min-w-0 table-fixed text-left border-collapse">
+          <table className="w-full min-w-[940px] lg:min-w-0 table-fixed text-left border-collapse">
             <colgroup>
-              <col className="w-[100px]" />
+              <col className="w-[96px]" />
               <col />
               <col className="w-[82px]" />
-              <col className="w-[136px]" />
-              <col className="w-[250px]" />
-              <col className="w-[156px]" />
+              <col className="w-[132px]" />
+              <col className="w-[168px]" />
+              <col className="w-[210px]" />
             </colgroup>
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">
@@ -494,27 +597,73 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                         <span className="text-[11px] text-emerald-700 font-medium">Terproteksi Hash</span>
                       )}
                     </td>
-                    <td className="py-3 px-3 text-[11px] text-slate-500 font-mono tabular-nums whitespace-nowrap">
-                      {st.pin_updated_at}
+                    <td
+                      className="py-3 px-3 text-[11px] text-slate-500 font-mono tabular-nums whitespace-nowrap"
+                      title={st.pin_updated_at}
+                    >
+                      {formatPinUpdatedAt(st.pin_updated_at)}
                     </td>
                     <td className="py-3 pl-3 pr-5 text-right whitespace-nowrap">
-                      {isAdmin ? (
-                        <button
-                          type="button"
-                          onClick={() => openPinModal(st)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                        >
-                          <KeyRound className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          Ubah / Reset PIN
-                        </button>
+                      {confirmDeleteStudentId === st.id ? (
+                        <div className="inline-flex items-center gap-1.5">
+                          <span className="text-[11px] font-semibold text-red-700">Hapus?</span>
+                          <button
+                            type="button"
+                            disabled={deletingStudentId === st.id}
+                            onClick={() => handleDeleteStudent(st.id)}
+                            className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                          >
+                            Ya
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteStudentId(null)}
+                            className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                          >
+                            Batal
+                          </button>
+                        </div>
                       ) : (
-                        <span
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 whitespace-nowrap"
-                          title="Hanya Admin Penanggung Jawab Ujian Semester yang dapat mengubah atau mereset PIN"
-                        >
-                          <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                          Khusus Admin
-                        </span>
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openEditStudentModal(st)}
+                            className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                            title="Edit NIS, Nama, atau Kelas"
+                          >
+                            <Pencil className="w-3 h-3 shrink-0" aria-hidden="true" />
+                            Edit
+                          </button>
+                          {isAdmin ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openPinModal(st)}
+                                className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                                title="Ubah / Reset PIN Semester"
+                              >
+                                <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                PIN
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteStudentId(st.id)}
+                                className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                title="Hapus Siswa"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                              </button>
+                            </>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 whitespace-nowrap pl-1"
+                              title="Hanya Admin Penanggung Jawab Ujian Semester yang dapat mengubah PIN atau menghapus siswa"
+                            >
+                              <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              PIN: Admin
+                            </span>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -1102,6 +1251,189 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               >
                 Selesai
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Student Modal */}
+      {editTargetStudent && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-base font-bold text-slate-900">Edit Data Siswa</h3>
+              <button
+                type="button"
+                onClick={() => setEditTargetStudent(null)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {editModalError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-medium text-red-700">
+                {editModalError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEditStudent} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">NIS</label>
+                <input
+                  type="text"
+                  required
+                  value={editNis}
+                  onChange={(e) => setEditNis(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nama Lengkap Siswa</label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Kelas</label>
+                <select
+                  value={editClassId}
+                  onChange={(e) => setEditClassId(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                >
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Kelas {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditTargetStudent(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
+                >
+                  {savingEdit ? 'Menyimpan...' : 'Simpan Perubahan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Printable Exam Participant Cards Modal */}
+      {showPrintModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden shadow-xl">
+            <div className="px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div>
+                <h3 className="font-display text-base font-bold text-slate-900">
+                  Cetak Kartu Peserta Ujian ({filteredStudents.length} Siswa)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Tata letak otomatis disesuaikan untuk kertas A4 (2 kolom per baris). Anda dapat mencetak langsung atau menyimpan sebagai PDF.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPrintModal(false)}
+                className="text-slate-400 hover:text-slate-700 self-end sm:self-auto cursor-pointer"
+                aria-label="Tutup modal cetak kartu"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[240px]">
+                <input
+                  type="text"
+                  value={printCardHeader}
+                  onChange={(e) => setPrintCardHeader(e.target.value)}
+                  placeholder="Judul kartu peserta..."
+                  className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={printShowPin}
+                    onChange={(e) => setPrintShowPin(e.target.checked)}
+                    className="rounded border-slate-300 text-blue-700"
+                  />
+                  Tampilkan PIN Semester di Kartu
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleTriggerPrintCards}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                Cetak / Simpan PDF
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable p-6 bg-slate-100">
+              <div
+                id="printable-student-cards"
+                className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 bg-white p-4 rounded-xl border border-slate-200"
+              >
+                {filteredStudents.map((st) => (
+                  <div
+                    key={st.id}
+                    className="print-card-item border border-slate-300 rounded-lg p-3.5 bg-white flex flex-col justify-between gap-2.5"
+                  >
+                    <div className="border-b border-slate-200 pb-2 flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-blue-700">
+                          ExamFlow Pro
+                        </div>
+                        <div className="text-xs font-bold text-slate-900 leading-tight">
+                          {printCardHeader.trim() || 'Kartu Peserta Ujian Semester'}
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-mono font-bold text-slate-800 border border-slate-300 px-2 py-0.5 rounded">
+                        Kelas {st.class_name}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="col-span-2">
+                        <div className="text-[10px] text-slate-500">Nama Peserta</div>
+                        <div className="font-bold text-slate-900 truncate">{st.name}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-slate-500">NIS / No. Ujian</div>
+                        <div className="font-mono font-bold text-slate-900 tabular-nums">{st.nis}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-slate-500">PIN Semester</div>
+                        <div className="font-mono font-bold text-blue-700 tracking-wider tabular-nums">
+                          {printShowPin ? st.semester_pin || '—' : '••••••'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-1.5 border-t border-dashed border-slate-200 text-[10px] text-slate-500">
+                      Gunakan NIS &amp; PIN di atas untuk masuk melalui aplikasi Exambro atau Portal Ujian Siswa.
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

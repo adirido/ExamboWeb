@@ -85,6 +85,8 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [correctOption, setCorrectOption] = useState('A');
   const [points, setPoints] = useState(20);
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
 
@@ -172,12 +174,16 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   async function handleDelete(qId: number) {
     if (!activePkgId) return;
+    setDeletingId(qId);
     try {
       await teacherApi.deleteQuestion(token, qId);
+      setConfirmDeleteId(null);
       await loadQuestions(activePkgId);
       await onPackagesChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal menghapus soal.');
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -450,14 +456,35 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                     <Edit3 className="w-3.5 h-3.5" />
                     Ubah
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(q.id)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-200 rounded-lg hover:bg-red-50 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Hapus
-                  </button>
+                  {confirmDeleteId === q.id ? (
+                    <div className="inline-flex items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-red-700">Hapus soal?</span>
+                      <button
+                        type="button"
+                        disabled={deletingId === q.id}
+                        onClick={() => handleDelete(q.id)}
+                        className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-60 rounded cursor-pointer"
+                      >
+                        {deletingId === q.id ? '...' : 'Ya'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteId(q.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-200 rounded-lg hover:bg-red-50 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Hapus
+                    </button>
+                  )}
                 </div>
               </div>
 

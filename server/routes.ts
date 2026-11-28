@@ -442,6 +442,134 @@ export function createApiRouter(): express.Router {
     res.json({ success: true });
   });
 
+  // ==========================
+  // 1C. MASTER CLASSES MANAGEMENT (ADMIN CRUD)
+  // ==========================
+  const normalizeClassInput = (name?: string, gradeLevel?: number) => {
+    const cleanName = (name || '')
+      .trim()
+      .toUpperCase()
+      .replace(/^KELAS\s+/i, '')
+      .replace(/\s+/g, ' ');
+    let resolvedGrade = Number(gradeLevel);
+    if (!Number.isFinite(resolvedGrade) || resolvedGrade < 1 || resolvedGrade > 12) {
+      const m = cleanName.match(/^(\d{1,2})/);
+      const parsed = m ? Number(m[1]) : 8;
+      resolvedGrade = Math.min(12, Math.max(1, Number.isFinite(parsed) ? parsed : 8));
+    } else {
+      resolvedGrade = Math.round(resolvedGrade);
+    }
+    return { cleanName, resolvedGrade };
+  };
+
+  router.get('/classes', requireTeacherAuth, (_req: AuthenticatedTeacherRequest, res: Response) => {
+    const rows = db
+      .prepare(`
+        SELECT c.id, c.name, c.grade_level,
+               (SELECT COUNT(*) FROM students st WHERE st.class_id = c.id) AS student_count,
+               (SELECT COUNT(*) FROM exam_packages ep WHERE ep.class_id = c.id) AS package_count
+        FROM classes c
+        ORDER BY c.grade_level ASC, c.name ASC
+      `)
+      .all();
+    res.json({ classes: rows });
+  });
+
+  router.post('/classes', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const { name, gradeLevel } = req.body as { name?: string; gradeLevel?: number };
+    const { cleanName, resolvedGrade } = normalizeClassInput(name, gradeLevel);
+
+    if (!cleanName || cleanName.length > 24) {
+      res.status(400).json({ error: 'Nama kelas wajib diisi (maks. 24 karakter, misal: 7A, 8B, 10 IPA 1).' });
+      return;
+    }
+
+    try {
+      const info = db
+        .prepare('INSERT INTO classes (name, grade_level) VALUES (?, ?)')
+        .run(cleanName, resolvedGrade);
+      const created = db
+        .prepare('SELECT id, name, grade_level, 0 AS student_count, 0 AS package_count FROM classes WHERE id = ?')
+        .get(Number(info.lastInsertRowid));
+      res.status(201).json({ class: created });
+    } catch {
+      res.status(409).json({ error: `Kelas "${cleanName}" sudah terdaftar.` });
+    }
+  });
+
+  router.put('/classes/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const classId = Number(req.params.id);
+    const existing = db.prepare('SELECT id, name, grade_level FROM classes WHERE id = ?').get(classId) as
+      | { id: number; name: string; grade_level: number }
+      | undefined;
+
+    if (!existing) {
+      res.status(404).json({ error: 'Kelas tidak ditemukan.' });
+      return;
+    }
+
+    const { name, gradeLevel } = req.body as { name?: string; gradeLevel?: number };
+    const { cleanName, resolvedGrade } = normalizeClassInput(
+      name !== undefined ? name : existing.name,
+      gradeLevel !== undefined ? gradeLevel : existing.grade_level
+    );
+
+    if (!cleanName || cleanName.length > 24) {
+      res.status(400).json({ error: 'Nama kelas wajib diisi (maks. 24 karakter).' });
+      return;
+    }
+
+    try {
+      db.prepare('UPDATE classes SET name = ?, grade_level = ? WHERE id = ?').run(
+        cleanName,
+        resolvedGrade,
+        classId
+      );
+      const updated = db
+        .prepare(`
+          SELECT c.id, c.name, c.grade_level,
+                 (SELECT COUNT(*) FROM students st WHERE st.class_id = c.id) AS student_count,
+                 (SELECT COUNT(*) FROM exam_packages ep WHERE ep.class_id = c.id) AS package_count
+          FROM classes c
+          WHERE c.id = ?
+        `)
+        .get(classId);
+      res.json({ class: updated });
+    } catch {
+      res.status(409).json({ error: `Nama kelas "${cleanName}" sudah digunakan kelas lain.` });
+    }
+  });
+
+  router.delete('/classes/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const classId = Number(req.params.id);
+
+    const existing = db.prepare('SELECT id FROM classes WHERE id = ?').get(classId);
+    if (!existing) {
+      res.status(404).json({ error: 'Kelas tidak ditemukan.' });
+      return;
+    }
+
+    const usedStudents = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM students WHERE class_id = ?').get(classId) as { cnt: number }
+    ).cnt;
+    const usedPackages = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM exam_packages WHERE class_id = ?').get(classId) as { cnt: number }
+    ).cnt;
+
+    if (usedStudents > 0 || usedPackages > 0) {
+      res.status(409).json({
+        error: `Kelas tidak dapat dihapus karena masih memiliki ${usedStudents} siswa dan ${usedPackages} paket ujian.`,
+      });
+      return;
+    }
+
+    db.prepare('DELETE FROM classes WHERE id = ?').run(classId);
+    res.json({ success: true });
+  });
+
   router.get('/admin/teachers', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     if (!requireAdminRole(req, res)) return;
     const teachers = db
@@ -1204,7 +1332,7 @@ export function createApiRouter(): express.Router {
     const portalBaseUrl =
       normalizeStudentPortalBaseUrl(requestedBase) ||
       normalizeStudentPortalBaseUrl(originHeader) ||
-      'https://proforkoc.github.io/exambro/';
+      'https://examboweb.pages.dev/';
 
     const studentExamUrl = `${portalBaseUrl}#/exam?token=${encodeURIComponent(pkg.current_token)}`;
     const exambroDeepLink = `examflow://join?payload=${encodeURIComponent(encryptedPayload)}`;
@@ -1568,6 +1696,69 @@ export function createApiRouter(): express.Router {
     } catch {
       res.status(409).json({ error: 'NIS siswa sudah terdaftar.' });
     }
+  });
+
+  router.put('/students/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const studentId = Number(req.params.id);
+    const existing = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
+    if (!existing) {
+      res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+      return;
+    }
+
+    const { nis, name, classId } = req.body as {
+      nis?: string;
+      name?: string;
+      classId?: number;
+    };
+
+    const cleanNis = (nis || '').trim();
+    const cleanName = (name || '').trim();
+    const cleanClassId = Number(classId);
+
+    if (!cleanNis || !cleanName || !Number.isFinite(cleanClassId) || cleanClassId <= 0) {
+      res.status(400).json({ error: 'NIS, nama siswa, dan kelas wajib diisi.' });
+      return;
+    }
+
+    const cls = db.prepare('SELECT id, name FROM classes WHERE id = ?').get(cleanClassId) as
+      | { id: number; name: string }
+      | undefined;
+    if (!cls) {
+      res.status(400).json({ error: 'Kelas yang dipilih tidak valid.' });
+      return;
+    }
+
+    try {
+      db.prepare('UPDATE students SET nis = ?, name = ?, class_id = ? WHERE id = ?').run(
+        cleanNis,
+        cleanName,
+        cleanClassId,
+        studentId
+      );
+      const updated = db
+        .prepare(`
+          SELECT st.id, st.nis, st.name, st.class_id, st.pin_updated_at, c.name AS class_name
+          FROM students st
+          JOIN classes c ON c.id = st.class_id
+          WHERE st.id = ?
+        `)
+        .get(studentId);
+      res.json({ student: updated });
+    } catch {
+      res.status(409).json({ error: `NIS "${cleanNis}" sudah digunakan siswa lain.` });
+    }
+  });
+
+  router.delete('/students/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
+    const studentId = Number(req.params.id);
+    const info = db.prepare('DELETE FROM students WHERE id = ?').run(studentId);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Siswa tidak ditemukan.' });
+      return;
+    }
+    res.json({ success: true });
   });
 
   const handleAdminUpdatePin = (req: AuthenticatedTeacherRequest, res: Response) => {
@@ -2005,6 +2196,110 @@ export function createApiRouter(): express.Router {
     });
   });
 
+  router.post('/sessions/:id/reset-device', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const sessionId = Number(req.params.id);
+    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+      return;
+    }
+
+    if (session.status === 'SUBMITTED') {
+      res.status(400).json({ error: 'Sesi ujian yang sudah selesai tidak dapat direset perangkatnya.' });
+      return;
+    }
+
+    const nextSessionToken = generateSessionToken();
+    db.prepare(`UPDATE exam_sessions SET session_token = ?, device_id = '', session_info = ? WHERE id = ?`).run(
+      nextSessionToken,
+      'Diizinkan ganti perangkat oleh pengawas',
+      sessionId
+    );
+
+    broadcastPackageEvent({
+      type: 'session:updated',
+      packageId: session.package_id,
+      studentId: session.student_id,
+      sessionId: session.id,
+      payload: { status: session.status, deviceReset: true },
+      timestamp: Date.now(),
+    });
+
+    res.json({ success: true, sessionId, status: session.status });
+  });
+
+  router.post('/sessions/:id/force-submit', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const sessionId = Number(req.params.id);
+    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+      return;
+    }
+
+    if (session.status === 'SUBMITTED') {
+      res.status(400).json({ error: 'Sesi ujian ini sudah berstatus selesai/dikumpulkan.' });
+      return;
+    }
+
+    const finalized = gradeAndFinalizeSession(session.id, session.package_id);
+
+    broadcastPackageEvent({
+      type: 'session:updated',
+      packageId: session.package_id,
+      studentId: session.student_id,
+      sessionId: session.id,
+      payload: { status: 'SUBMITTED', reason: 'FORCE_SUBMITTED' },
+      timestamp: Date.now(),
+    });
+
+    res.json({
+      success: true,
+      sessionId,
+      status: 'SUBMITTED',
+      score: finalized.score,
+      correctCount: finalized.correctCount,
+      totalQuestions: finalized.totalQuestions,
+    });
+  });
+
+  router.post('/sessions/:id/extend-time', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const sessionId = Number(req.params.id);
+    const { extraMinutes = 10 } = (req.body || {}) as { extraMinutes?: number };
+    const cleanMinutes = Math.max(1, Math.min(60, Math.round(Number(extraMinutes) || 10)));
+
+    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+      return;
+    }
+
+    if (session.status === 'SUBMITTED') {
+      res.status(400).json({ error: 'Tidak dapat menambah waktu untuk sesi yang sudah selesai.' });
+      return;
+    }
+
+    const nextExpiresAt = Math.max(session.expires_at, Date.now()) + cleanMinutes * 60 * 1000;
+    db.prepare('UPDATE exam_sessions SET expires_at = ? WHERE id = ?').run(nextExpiresAt, sessionId);
+
+    broadcastPackageEvent({
+      type: 'session:updated',
+      packageId: session.package_id,
+      studentId: session.student_id,
+      sessionId: session.id,
+      payload: { status: session.status, extraMinutes: cleanMinutes },
+      timestamp: Date.now(),
+    });
+
+    res.json({
+      success: true,
+      sessionId,
+      expiresAt: nextExpiresAt,
+      extraMinutes: cleanMinutes,
+    });
+  });
+
   router.get('/packages/:id/recap', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
     const pkg = db
@@ -2025,7 +2320,8 @@ export function createApiRouter(): express.Router {
 
     const rows = db
       .prepare(`
-        SELECT st.nis, st.name, c.name AS class_name,
+        SELECT es.id AS session_id,
+               st.nis, st.name, c.name AS class_name,
                COALESCE(es.status, 'NOT_STARTED') AS status,
                es.correct_count,
                COALESCE(es.total_questions, ?) AS total_questions,
@@ -2040,6 +2336,86 @@ export function createApiRouter(): express.Router {
       `)
       .all(pkg.total_questions, pkgId, pkg.class_id);
 
+    const questions = db
+      .prepare(`
+        SELECT id, question_text, options_json, correct_option, points
+        FROM questions
+        WHERE package_id = ?
+        ORDER BY id ASC
+      `)
+      .all(pkgId) as Array<{
+      id: number;
+      question_text: string;
+      options_json: string;
+      correct_option: string;
+      points: number;
+    }>;
+
+    const submittedSessions = db
+      .prepare(`SELECT id FROM exam_sessions WHERE package_id = ? AND status = 'SUBMITTED'`)
+      .all(pkgId) as Array<{ id: number }>;
+
+    const submittedSessionIds = submittedSessions.map((s) => s.id);
+    const answerByQuestion = new Map<number, string[]>();
+    if (submittedSessionIds.length > 0) {
+      const placeholders = submittedSessionIds.map(() => '?').join(',');
+      const ansRows = db
+        .prepare(
+          `SELECT question_id, selected_option FROM student_answers WHERE session_id IN (${placeholders})`
+        )
+        .all(...submittedSessionIds) as Array<{ question_id: number; selected_option: string }>;
+
+      for (const a of ansRows) {
+        const list = answerByQuestion.get(a.question_id) || [];
+        list.push(a.selected_option);
+        answerByQuestion.set(a.question_id, list);
+      }
+    }
+
+    const totalSubmitted = submittedSessionIds.length;
+    const questionAnalytics = questions.map((q, index) => {
+      let parsedOptions: Array<{ key: string; text: string }> = [];
+      try {
+        parsedOptions = JSON.parse(q.options_json);
+      } catch {
+        parsedOptions = [];
+      }
+      const optionDistribution: Record<string, number> = {};
+      for (const opt of parsedOptions) {
+        optionDistribution[opt.key] = 0;
+      }
+
+      const answers = answerByQuestion.get(q.id) || [];
+      let correctCount = 0;
+      let wrongCount = 0;
+      for (const sel of answers) {
+        if (sel) {
+          optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
+        }
+        if (sel === q.correct_option) {
+          correctCount++;
+        } else if (sel) {
+          wrongCount++;
+        }
+      }
+      const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
+      const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
+
+      return {
+        questionId: q.id,
+        number: index + 1,
+        questionText: q.question_text,
+        correctOption: q.correct_option,
+        points: q.points,
+        totalSubmitted,
+        correctCount,
+        wrongCount,
+        blankCount,
+        correctRate,
+        optionDistribution,
+      };
+    });
+
     res.json({
       package: {
         id: pkg.id,
@@ -2049,6 +2425,112 @@ export function createApiRouter(): express.Router {
         totalQuestions: pkg.total_questions,
       },
       records: rows,
+      questionAnalytics,
+    });
+  });
+
+  router.get('/sessions/:id/review', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const sessionId = Number(req.params.id);
+    const session = db
+      .prepare(`
+        SELECT es.*, st.nis AS student_nis, st.name AS student_name, c.name AS student_class_name,
+               ep.title AS pkg_title, s.name AS pkg_subject_name, c2.name AS pkg_class_name
+        FROM exam_sessions es
+        JOIN students st ON st.id = es.student_id
+        JOIN classes c ON c.id = st.class_id
+        JOIN exam_packages ep ON ep.id = es.package_id
+        JOIN subjects s ON s.id = ep.subject_id
+        JOIN classes c2 ON c2.id = ep.class_id
+        WHERE es.id = ?
+      `)
+      .get(sessionId) as
+      | {
+          id: number;
+          package_id: number;
+          status: string;
+          score: number | null;
+          correct_count: number | null;
+          total_questions: number;
+          violation_count: number;
+          started_at: number;
+          submitted_at: number | null;
+          student_nis: string;
+          student_name: string;
+          student_class_name: string;
+          pkg_title: string;
+          pkg_subject_name: string;
+          pkg_class_name: string;
+        }
+      | undefined;
+
+    if (!session) {
+      res.status(404).json({ error: 'Sesi ujian tidak ditemukan.' });
+      return;
+    }
+
+    const questions = db
+      .prepare(`
+        SELECT id, question_text, options_json, correct_option, points
+        FROM questions
+        WHERE package_id = ?
+        ORDER BY id ASC
+      `)
+      .all(session.package_id) as Array<{
+      id: number;
+      question_text: string;
+      options_json: string;
+      correct_option: string;
+      points: number;
+    }>;
+
+    const ansRows = db
+      .prepare('SELECT question_id, selected_option FROM student_answers WHERE session_id = ?')
+      .all(sessionId) as Array<{ question_id: number; selected_option: string }>;
+    const ansMap = new Map(ansRows.map((a) => [a.question_id, a.selected_option]));
+
+    const items = questions.map((q, idx) => {
+      let options: Array<{ key: string; text: string }> = [];
+      try {
+        options = JSON.parse(q.options_json);
+      } catch {
+        options = [];
+      }
+      const selectedOption = ansMap.get(q.id) || null;
+      return {
+        questionId: q.id,
+        number: idx + 1,
+        questionText: q.question_text,
+        options,
+        correctOption: q.correct_option,
+        selectedOption,
+        isCorrect: selectedOption === q.correct_option,
+        points: q.points,
+      };
+    });
+
+    res.json({
+      session: {
+        id: session.id,
+        status: session.status,
+        score: session.score,
+        correctCount: session.correct_count,
+        totalQuestions: session.total_questions || questions.length,
+        violationCount: session.violation_count,
+        startedAt: session.started_at,
+        submittedAt: session.submitted_at,
+      },
+      student: {
+        nis: session.student_nis,
+        name: session.student_name,
+        className: session.student_class_name,
+      },
+      package: {
+        id: session.package_id,
+        title: session.pkg_title,
+        subjectName: session.pkg_subject_name,
+        className: session.pkg_class_name,
+      },
+      items,
     });
   });
 

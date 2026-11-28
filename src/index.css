@@ -34,3 +34,59 @@
 .scrollbar-stable {
   scrollbar-gutter: stable;
 }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  body.printing-cards * {
+    visibility: hidden !important;
+  }
+
+  body.printing-cards #printable-student-cards,
+  body.printing-cards #printable-student-cards * {
+    visibility: visible !important;
+  }
+
+  body.printing-cards #printable-student-cards {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+  }
+
+  body.printing-cards .print-card-item {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  body.printing-recap * {
+    visibility: hidden !important;
+  }
+
+  body.printing-recap #printable-recap-report,
+  body.printing-recap #printable-recap-report * {
+    visibility: visible !important;
+  }
+
+  body.printing-recap #printable-recap-report {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+    border: none !important;
+  }
+
+  body.printing-recap .no-print {
+    display: none !important;
+  }
+}
+

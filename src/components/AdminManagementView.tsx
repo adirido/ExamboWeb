@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Users,
   Link2,
+  GraduationCap,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type {
@@ -55,7 +56,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   classes,
   onContextChanged,
 }) => {
-  const [subTab, setSubTab] = useState<'teachers' | 'subjects'>('teachers');
+  const [subTab, setSubTab] = useState<'teachers' | 'subjects' | 'classes'>('teachers');
 
   // Teachers state
   const [teachers, setTeachers] = useState<TeacherAccountRecord[]>([]);
@@ -124,6 +125,21 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   const [subjectModalError, setSubjectModalError] = useState<string | null>(null);
   const [savingSubject, setSavingSubject] = useState(false);
 
+  // Classes state
+  const [classesList, setClassesList] = useState<ClassItem[]>(classes);
+  const [loadingClasses, setLoadingClasses] = useState(true);
+  const [classFeedback, setClassFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [confirmDeleteClassId, setConfirmDeleteClassId] = useState<number | null>(null);
+  const [busyClassId, setBusyClassId] = useState<number | null>(null);
+
+  // Add / Edit Class Modal
+  const [showClassModal, setShowClassModal] = useState(false);
+  const [editingClass, setEditingClass] = useState<ClassItem | null>(null);
+  const [classNameInput, setClassNameInput] = useState('');
+  const [classGradeInput, setClassGradeInput] = useState<number>(8);
+  const [classModalError, setClassModalError] = useState<string | null>(null);
+  const [savingClass, setSavingClass] = useState(false);
+
   async function loadTeachers() {
     setLoadingTeachers(true);
     try {
@@ -154,9 +170,25 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     }
   }
 
+  async function loadClasses() {
+    setLoadingClasses(true);
+    try {
+      const res = await teacherApi.getClasses(token);
+      setClassesList(res.classes);
+    } catch (err) {
+      setClassFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Gagal memuat daftar kelas sekolah.',
+      });
+    } finally {
+      setLoadingClasses(false);
+    }
+  }
+
   useEffect(() => {
     loadTeachers();
     loadSubjects();
+    loadClasses();
   }, [token]);
 
   useEffect(() => {
@@ -491,6 +523,90 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     }
   }
 
+  // --- Class CRUD Handlers ---
+  function inferGradeFromClassName(rawName: string): number | null {
+    const match = rawName.trim().replace(/^KELAS\s+/i, '').match(/^(\d{1,2})/);
+    if (!match) return null;
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 12) return null;
+    return parsed;
+  }
+
+  function openCreateClassModal() {
+    setEditingClass(null);
+    setClassNameInput('');
+    setClassGradeInput(8);
+    setClassModalError(null);
+    setShowClassModal(true);
+  }
+
+  function openEditClassModal(cls: ClassItem) {
+    setEditingClass(cls);
+    setClassNameInput(cls.name);
+    setClassGradeInput(cls.grade_level);
+    setClassModalError(null);
+    setShowClassModal(true);
+  }
+
+  function handleClassNameChange(val: string) {
+    const clean = val.toUpperCase();
+    setClassNameInput(clean);
+    const inferred = inferGradeFromClassName(clean);
+    if (inferred !== null) {
+      setClassGradeInput(inferred);
+    }
+  }
+
+  async function handleSaveClass(e: React.FormEvent) {
+    e.preventDefault();
+    setClassModalError(null);
+    setSavingClass(true);
+    try {
+      const normalizedName = classNameInput.trim().toUpperCase().replace(/^KELAS\s+/i, '');
+      if (editingClass) {
+        await teacherApi.updateClass(token, editingClass.id, {
+          name: normalizedName,
+          gradeLevel: classGradeInput,
+        });
+        setClassFeedback({ type: 'ok', text: `Kelas "${normalizedName}" berhasil diperbarui.` });
+      } else {
+        await teacherApi.createClass(token, {
+          name: normalizedName,
+          gradeLevel: classGradeInput,
+        });
+        setClassFeedback({ type: 'ok', text: `Kelas "${normalizedName}" berhasil ditambahkan.` });
+      }
+      setShowClassModal(false);
+      await loadClasses();
+      await loadTeachers();
+      await onContextChanged();
+    } catch (err) {
+      setClassModalError(err instanceof Error ? err.message : 'Gagal menyimpan data kelas.');
+    } finally {
+      setSavingClass(false);
+    }
+  }
+
+  async function handleDeleteClass(clsId: number) {
+    setBusyClassId(clsId);
+    setClassFeedback(null);
+    try {
+      await teacherApi.deleteClass(token, clsId);
+      setConfirmDeleteClassId(null);
+      setClassFeedback({ type: 'ok', text: 'Kelas telah dihapus dari daftar master.' });
+      await loadClasses();
+      await loadTeachers();
+      await onContextChanged();
+    } catch (err) {
+      setClassFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Gagal menghapus kelas.',
+      });
+    } finally {
+      setBusyClassId(null);
+    }
+  }
+
   const filteredTeachers = teachers.filter((t) => {
     if (roleFilter !== 'ALL' && t.role !== roleFilter) return false;
     if (searchQuery.trim()) {
@@ -506,17 +622,17 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header & Sub-tab Switcher */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h2 className="font-display text-lg font-bold text-slate-900">
-            Administrasi Guru &amp; Master Mata Pelajaran
+            Administrasi Guru, Mata Pelajaran &amp; Kelas
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Kelola akun guru secara terpusat (tanpa registrasi terbuka), atur penugasan kelas/mapel, dan perbarui daftar mata pelajaran sekolah.
+            Kelola akun guru secara terpusat (tanpa registrasi terbuka), atur penugasan kelas/mapel, serta perbarui daftar mata pelajaran dan kelas sekolah.
           </p>
         </div>
 
-        <div className="inline-flex items-center bg-slate-100 p-1 rounded-lg shrink-0 self-start sm:self-auto">
+        <div className="inline-flex flex-wrap items-center bg-slate-100 p-1 rounded-lg shrink-0 self-start lg:self-auto">
           <button
             type="button"
             onClick={() => setSubTab('teachers')}
@@ -540,6 +656,18 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           >
             <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
             Mata Pelajaran ({subjects.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('classes')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+              subTab === 'classes'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <GraduationCap className="w-3.5 h-3.5" aria-hidden="true" />
+            Kelas ({classesList.length})
           </button>
         </div>
       </div>
@@ -907,6 +1035,144 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                     pkgCount > 0
                                       ? `Tidak dapat dihapus karena masih digunakan ${pkgCount} paket ujian`
                                       : 'Hapus Mata Pelajaran'
+                                  }
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================== */}
+      {/* TAB 3: MASTER KELAS        */}
+      {/* ========================== */}
+      {subTab === 'classes' && (
+        <div className="space-y-5">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-display text-sm font-bold text-slate-900">Daftar Kelas Sekolah</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Kelas yang terdaftar otomatis muncul di filter siswa, formulir tambah/edit siswa, penugasan guru, dan pembuatan paket ujian.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openCreateClassModal}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-auto"
+            >
+              <Plus className="w-4 h-4" aria-hidden="true" />
+              Tambah Kelas
+            </button>
+          </div>
+
+          {classFeedback && (
+            <div
+              className={`p-4 rounded-xl border text-xs font-medium flex items-center justify-between gap-4 ${
+                classFeedback.type === 'ok'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : 'bg-red-50 border-red-200 text-red-700'
+              }`}
+            >
+              <span>{classFeedback.text}</span>
+              <button type="button" onClick={() => setClassFeedback(null)} className="text-slate-500 hover:text-slate-800 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            {loadingClasses ? (
+              <div className="p-8 space-y-3">
+                <div className="h-5 bg-slate-100 rounded w-1/3 animate-pulse" />
+                <div className="h-20 bg-slate-100 rounded w-full animate-pulse" />
+              </div>
+            ) : classesList.length === 0 ? (
+              <div className="p-10 text-center">
+                <GraduationCap className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-800">Belum ada kelas terdaftar</p>
+                <p className="text-xs text-slate-500 mt-1">Tambahkan kelas pertama (misal: 7A, 8A, 9A) untuk mengelompokkan siswa.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4">Nama Kelas</th>
+                      <th className="py-3 px-4">Tingkat</th>
+                      <th className="py-3 px-4 text-right">Jumlah Siswa</th>
+                      <th className="py-3 px-4 text-right">Paket Ujian</th>
+                      <th className="py-3 px-4 text-right">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {classesList.map((cls) => {
+                      const stCount = cls.student_count ?? 0;
+                      const pkgCount = cls.package_count ?? 0;
+                      const isInUse = stCount > 0 || pkgCount > 0;
+                      const isBusy = busyClassId === cls.id;
+                      return (
+                        <tr key={cls.id} className="hover:bg-slate-50/70">
+                          <td className="py-3.5 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
+                            Kelas {cls.name}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 tabular-nums">
+                            Tingkat {cls.grade_level}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-800 tabular-nums">
+                            {stCount}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono text-slate-600 tabular-nums">
+                            {pkgCount}
+                          </td>
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            {confirmDeleteClassId === cls.id ? (
+                              <div className="inline-flex items-center gap-1.5">
+                                <span className="text-[11px] text-red-700 font-semibold">Hapus?</span>
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => handleDeleteClass(cls.id)}
+                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                                >
+                                  Ya
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteClassId(null)}
+                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                >
+                                  Batal
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditClassModal(cls)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isInUse}
+                                  onClick={() => setConfirmDeleteClassId(cls.id)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                                  title={
+                                    isInUse
+                                      ? `Tidak dapat dihapus karena masih memiliki ${stCount} siswa dan ${pkgCount} paket ujian`
+                                      : 'Hapus Kelas'
                                   }
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -1535,6 +1801,81 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                   className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
                 >
                   {savingSubject ? 'Menyimpan...' : editingSubject ? 'Simpan Perubahan' : 'Simpan Mapel'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tambah / Edit Kelas */}
+      {showClassModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-display text-base font-bold text-slate-900">
+                {editingClass ? 'Edit Data Kelas' : 'Tambah Kelas Baru'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowClassModal(false)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {classModalError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-medium text-red-700">
+                {classModalError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveClass} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Nama Kelas (tanpa kata &ldquo;Kelas&rdquo;)
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={24}
+                  value={classNameInput}
+                  onChange={(e) => handleClassNameChange(e.target.value)}
+                  placeholder="Contoh: 7A, 8C, 9B, 10 IPA 1"
+                  className="w-full px-3.5 py-2 text-sm font-mono font-bold border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Tingkat Kelas (1–12)</label>
+                <select
+                  value={classGradeInput}
+                  onChange={(e) => setClassGradeInput(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((g) => (
+                    <option key={g} value={g}>
+                      Tingkat {g}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowClassModal(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingClass}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
+                >
+                  {savingClass ? 'Menyimpan...' : editingClass ? 'Simpan Perubahan' : 'Simpan Kelas'}
                 </button>
               </div>
             </form>

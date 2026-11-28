@@ -66,6 +66,8 @@ export interface ClassItem {
   id: number;
   name: string;
   grade_level: number;
+  student_count?: number;
+  package_count?: number;
 }
 
 export interface ExamPackage {
@@ -242,6 +244,7 @@ export interface MonitoringPayload {
 }
 
 export interface RecapRow {
+  session_id?: number | null;
   nis: string;
   name: string;
   class_name: string;
@@ -251,6 +254,56 @@ export interface RecapRow {
   score: number | null;
   violation_count: number;
   submitted_at: number | null;
+}
+
+export interface QuestionAnalyticRow {
+  questionId: number;
+  number: number;
+  questionText: string;
+  correctOption: string;
+  points: number;
+  totalSubmitted: number;
+  correctCount: number;
+  wrongCount: number;
+  blankCount: number;
+  correctRate: number;
+  optionDistribution: Record<string, number>;
+}
+
+export interface SessionReviewItem {
+  questionId: number;
+  number: number;
+  questionText: string;
+  options: QuestionOption[];
+  correctOption: string;
+  selectedOption: string | null;
+  isCorrect: boolean;
+  points: number;
+}
+
+export interface SessionReviewPayload {
+  session: {
+    id: number;
+    status: SessionStatus;
+    score: number | null;
+    correctCount: number | null;
+    totalQuestions: number;
+    violationCount: number;
+    startedAt: number;
+    submittedAt: number | null;
+  };
+  student: {
+    nis: string;
+    name: string;
+    className: string;
+  };
+  package: {
+    id: number;
+    title: string;
+    subjectName: string;
+    className: string;
+  };
+  items: SessionReviewItem[];
 }
 
 export interface PublicActivePackage {

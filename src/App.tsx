@@ -40,11 +40,33 @@ function parseRouteFromLocation(): {
   };
 }
 
+const TEACHER_SESSION_KEY = 'examflow_teacher_session';
+
+function readStoredTeacherSession(): { token: string; profile: TeacherProfile } | null {
+  try {
+    const raw = window.sessionStorage.getItem(TEACHER_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: unknown; profile?: TeacherProfile };
+    if (
+      typeof parsed?.token === 'string' &&
+      parsed.token.length > 0 &&
+      parsed.profile &&
+      typeof parsed.profile.id === 'number' &&
+      typeof parsed.profile.email === 'string'
+    ) {
+      return { token: parsed.token, profile: parsed.profile };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [routeState, setRouteState] = useState(() => parseRouteFromLocation());
-  // Keep teacher auth token strictly in React memory (never localStorage/sessionStorage)
-  const [teacherToken, setTeacherToken] = useState<string | null>(null);
-  const [teacherProfile, setTeacherProfile] = useState<TeacherProfile | null>(null);
+  const [initialSession] = useState(() => readStoredTeacherSession());
+  const [teacherToken, setTeacherToken] = useState<string | null>(() => initialSession?.token ?? null);
+  const [teacherProfile, setTeacherProfile] = useState<TeacherProfile | null>(() => initialSession?.profile ?? null);
 
   useEffect(() => {
     function handleHashChange() {
@@ -67,6 +89,26 @@ export default function App() {
     setRouteState(parseRouteFromLocation());
   }
 
+  function handleTeacherLogin(token: string, profile: TeacherProfile) {
+    try {
+      window.sessionStorage.setItem(TEACHER_SESSION_KEY, JSON.stringify({ token, profile }));
+    } catch {
+      // Ignore storage quota errors
+    }
+    setTeacherToken(token);
+    setTeacherProfile(profile);
+  }
+
+  function handleTeacherLogout() {
+    try {
+      window.sessionStorage.removeItem(TEACHER_SESSION_KEY);
+    } catch {
+      // Ignore storage access errors
+    }
+    setTeacherToken(null);
+    setTeacherProfile(null);
+  }
+
   if (routeState.mode === 'student') {
     return (
       <StudentExamPortal
@@ -79,10 +121,7 @@ export default function App() {
   if (!teacherToken || !teacherProfile) {
     return (
       <TeacherLogin
-        onSuccess={(token, profile) => {
-          setTeacherToken(token);
-          setTeacherProfile(profile);
-        }}
+        onSuccess={handleTeacherLogin}
         onOpenStudentPortal={openStudentPortal}
       />
     );
@@ -92,10 +131,7 @@ export default function App() {
     <TeacherDashboard
       token={teacherToken}
       teacher={teacherProfile}
-      onLogout={() => {
-        setTeacherToken(null);
-        setTeacherProfile(null);
-      }}
+      onLogout={handleTeacherLogout}
       onOpenStudentPortal={openStudentPortal}
     />
   );

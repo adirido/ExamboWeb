@@ -119,6 +119,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       if (!selectedPackageId && pkgRes.packages.length > 0) {
         setSelectedPackageId(pkgRes.packages[0].id);
       }
+    } catch (err) {
+      const status = (err as { status?: number } | null)?.status;
+      if (status === 401) {
+        onLogout();
+      }
     } finally {
       setLoading(false);
     }
@@ -138,9 +143,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     { id: 'questions', label: 'Bank Soal', icon: <BookOpen className="w-4 h-4" /> },
     { id: 'students', label: 'Siswa & PIN', icon: <Users className="w-4 h-4" /> },
     { id: 'recap', label: 'Rekap Nilai', icon: <FileSpreadsheet className="w-4 h-4" /> },
-    { id: 'exambro', label: 'API Exambro', icon: <Smartphone className="w-4 h-4" /> },
     ...(teacher.role === 'ADMIN'
-      ? [{ id: 'admin' as const, label: 'Guru & Mapel', icon: <UserCog className="w-4 h-4" /> }]
+      ? [
+          { id: 'admin' as const, label: 'Guru & Mapel', icon: <UserCog className="w-4 h-4" /> },
+          { id: 'exambro' as const, label: 'API Exambro', icon: <Smartphone className="w-4 h-4" /> },
+        ]
       : []),
   ];
 
@@ -344,7 +351,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 />
               )}
 
-              {activeTab === 'exambro' && (
+              {activeTab === 'exambro' && teacher.role === 'ADMIN' && (
                 <ExambroDocsView
                   token={token}
                   assignments={assignments}

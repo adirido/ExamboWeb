@@ -948,6 +948,175 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if (method === 'GET' && path === '/classes') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+
+      const [{ data: classes }, { data: stRows }, { data: pkgRows }] = await Promise.all([
+        supabase
+          .from('classes')
+          .select('id, name, grade_level')
+          .order('grade_level', { ascending: true })
+          .order('name', { ascending: true }),
+        supabase.from('students').select('class_id'),
+        supabase.from('exam_packages').select('class_id'),
+      ]);
+
+      const stCounts = new Map<number, number>();
+      for (const r of stRows || []) {
+        stCounts.set(r.class_id, (stCounts.get(r.class_id) || 0) + 1);
+      }
+      const pkgCounts = new Map<number, number>();
+      for (const r of pkgRows || []) {
+        pkgCounts.set(r.class_id, (pkgCounts.get(r.class_id) || 0) + 1);
+      }
+
+      const result = (classes || []).map((c: { id: number; name: string; grade_level: number }) => ({
+        ...c,
+        student_count: stCounts.get(c.id) || 0,
+        package_count: pkgCounts.get(c.id) || 0,
+      }));
+      return jsonResponse(req, { classes: result });
+    }
+
+    const normalizeClassInput = (name?: string, gradeLevel?: number) => {
+      const cleanName = (name || '')
+        .trim()
+        .toUpperCase()
+        .replace(/^KELAS\s+/i, '')
+        .replace(/\s+/g, ' ');
+      let resolvedGrade = Number(gradeLevel);
+      if (!Number.isFinite(resolvedGrade) || resolvedGrade < 1 || resolvedGrade > 12) {
+        const m = cleanName.match(/^(\d{1,2})/);
+        const parsed = m ? Number(m[1]) : 8;
+        resolvedGrade = Math.min(12, Math.max(1, Number.isFinite(parsed) ? parsed : 8));
+      } else {
+        resolvedGrade = Math.round(resolvedGrade);
+      }
+      return { cleanName, resolvedGrade };
+    };
+
+    if (method === 'POST' && path === '/classes') {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+
+      const { name, gradeLevel } = await readJsonBody<{ name?: string; gradeLevel?: number }>(req);
+      const { cleanName, resolvedGrade } = normalizeClassInput(name, gradeLevel);
+
+      if (!cleanName || cleanName.length > 24) {
+        return jsonResponse(
+          req,
+          { error: 'Nama kelas wajib diisi (maks. 24 karakter, misal: 7A, 8B, 10 IPA 1).' },
+          400
+        );
+      }
+
+      const { data: created, error } = await supabase
+        .from('classes')
+        .insert({ name: cleanName, grade_level: resolvedGrade })
+        .select('id, name, grade_level')
+        .single();
+
+      if (error || !created) {
+        return jsonResponse(req, { error: `Kelas "${cleanName}" sudah terdaftar.` }, 409);
+      }
+
+      return jsonResponse(
+        req,
+        { class: { ...created, student_count: 0, package_count: 0 } },
+        201
+      );
+    }
+
+    const classMatch = path.match(/^\/classes\/(\d+)$/);
+    if (classMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
+      const classId = Number(classMatch[1]);
+
+      if (method === 'PUT') {
+        const { data: existing } = await supabase
+          .from('classes')
+          .select('id, name, grade_level')
+          .eq('id', classId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Kelas tidak ditemukan.' }, 404);
+        }
+
+        const { name, gradeLevel } = await readJsonBody<{ name?: string; gradeLevel?: number }>(req);
+        const { cleanName, resolvedGrade } = normalizeClassInput(
+          name !== undefined ? name : existing.name,
+          gradeLevel !== undefined ? gradeLevel : existing.grade_level
+        );
+
+        if (!cleanName || cleanName.length > 24) {
+          return jsonResponse(req, { error: 'Nama kelas wajib diisi (maks. 24 karakter).' }, 400);
+        }
+
+        const { data: updated, error } = await supabase
+          .from('classes')
+          .update({ name: cleanName, grade_level: resolvedGrade })
+          .eq('id', classId)
+          .select('id, name, grade_level')
+          .single();
+
+        if (error || !updated) {
+          return jsonResponse(req, { error: `Nama kelas "${cleanName}" sudah digunakan kelas lain.` }, 409);
+        }
+
+        const [{ count: studentCount }, { count: packageCount }] = await Promise.all([
+          supabase.from('students').select('id', { count: 'exact', head: true }).eq('class_id', classId),
+          supabase.from('exam_packages').select('id', { count: 'exact', head: true }).eq('class_id', classId),
+        ]);
+
+        return jsonResponse(req, {
+          class: {
+            ...updated,
+            student_count: studentCount || 0,
+            package_count: packageCount || 0,
+          },
+        });
+      }
+
+      if (method === 'DELETE') {
+        const { data: existing } = await supabase
+          .from('classes')
+          .select('id')
+          .eq('id', classId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Kelas tidak ditemukan.' }, 404);
+        }
+
+        const [{ count: usedStudents }, { count: usedPackages }] = await Promise.all([
+          supabase.from('students').select('id', { count: 'exact', head: true }).eq('class_id', classId),
+          supabase.from('exam_packages').select('id', { count: 'exact', head: true }).eq('class_id', classId),
+        ]);
+
+        if ((usedStudents || 0) > 0 || (usedPackages || 0) > 0) {
+          return jsonResponse(
+            req,
+            {
+              error: `Kelas tidak dapat dihapus karena masih memiliki ${usedStudents || 0} siswa dan ${usedPackages || 0} paket ujian.`,
+            },
+            409
+          );
+        }
+
+        await supabase.from('classes').delete().eq('id', classId);
+        return jsonResponse(req, { success: true });
+      }
+    }
+
     if (method === 'GET' && path === '/admin/teachers') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
@@ -1792,7 +1961,7 @@ Deno.serve(async (req: Request) => {
       const portalBaseUrl =
         normalizeStudentPortalBaseUrl(requestedBase) ||
         normalizeStudentPortalBaseUrl(originHeader) ||
-        'https://proforkoc.github.io/exambro/';
+        'https://examboweb.pages.dev/';
 
       const studentExamUrl = `${portalBaseUrl}#/exam?token=${encodeURIComponent(pkg.current_token)}`;
       const exambroDeepLink = `examflow://join?payload=${encodeURIComponent(encryptedPayload)}`;
@@ -2195,6 +2364,87 @@ Deno.serve(async (req: Request) => {
         },
         201
       );
+    }
+
+    const studentMatch = path.match(/^\/students\/(\d+)$/);
+    if (studentMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      const studentId = Number(studentMatch[1]);
+
+      if (method === 'PUT') {
+        const { data: existing } = await supabase
+          .from('students')
+          .select('id')
+          .eq('id', studentId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Siswa tidak ditemukan.' }, 404);
+        }
+
+        const { nis, name, classId } = await readJsonBody<{
+          nis?: string;
+          name?: string;
+          classId?: number;
+        }>(req);
+
+        const cleanNis = (nis || '').trim();
+        const cleanName = (name || '').trim();
+        const cleanClassId = Number(classId);
+
+        if (!cleanNis || !cleanName || !Number.isFinite(cleanClassId) || cleanClassId <= 0) {
+          return jsonResponse(req, { error: 'NIS, nama siswa, dan kelas wajib diisi.' }, 400);
+        }
+
+        const { data: cls } = await supabase
+          .from('classes')
+          .select('id, name')
+          .eq('id', cleanClassId)
+          .maybeSingle();
+        if (!cls) {
+          return jsonResponse(req, { error: 'Kelas yang dipilih tidak valid.' }, 400);
+        }
+
+        const { data: updated, error } = await supabase
+          .from('students')
+          .update({ nis: cleanNis, name: cleanName, class_id: cleanClassId })
+          .eq('id', studentId)
+          .select('id, nis, name, class_id, pin_updated_at')
+          .single();
+
+        if (error || !updated) {
+          return jsonResponse(req, { error: `NIS "${cleanNis}" sudah digunakan siswa lain.` }, 409);
+        }
+
+        return jsonResponse(req, {
+          student: {
+            ...updated,
+            class_name: cls.name,
+          },
+        });
+      }
+
+      if (method === 'DELETE') {
+        if (auth.teacher!.role !== 'ADMIN') {
+          return jsonResponse(
+            req,
+            { error: 'Akses ditolak. Hanya Admin Sekolah yang dapat menghapus data siswa.' },
+            403
+          );
+        }
+
+        const { data: deleted } = await supabase
+          .from('students')
+          .delete()
+          .eq('id', studentId)
+          .select('id');
+
+        if (!deleted || deleted.length === 0) {
+          return jsonResponse(req, { error: 'Siswa tidak ditemukan.' }, 404);
+        }
+        return jsonResponse(req, { success: true });
+      }
     }
 
     const pinResetMatch = path.match(/^\/students\/(\d+)\/(?:reset-pin|pin)$/);
@@ -2667,6 +2917,147 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    const resetDeviceMatch = path.match(/^\/sessions\/(\d+)\/reset-device$/);
+    if (method === 'POST' && resetDeviceMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      const sessionId = Number(resetDeviceMatch[1]);
+
+      const { data: session } = await supabase
+        .from('exam_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (!session) {
+        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      }
+
+      if (session.status === 'SUBMITTED') {
+        return jsonResponse(
+          req,
+          { error: 'Sesi ujian yang sudah selesai tidak dapat direset perangkatnya.' },
+          400
+        );
+      }
+
+      const nextSessionToken = generateSessionToken();
+      await supabase
+        .from('exam_sessions')
+        .update({
+          session_token: nextSessionToken,
+          device_id: '',
+          session_info: 'Diizinkan ganti perangkat oleh pengawas',
+        })
+        .eq('id', sessionId);
+
+      await broadcastPackageEvent(supabase, {
+        type: 'session:updated',
+        packageId: session.package_id,
+        studentId: session.student_id,
+        sessionId: session.id,
+        payload: { status: session.status, deviceReset: true },
+        timestamp: Date.now(),
+      });
+
+      return jsonResponse(req, { success: true, sessionId, status: session.status });
+    }
+
+    const forceSubmitMatch = path.match(/^\/sessions\/(\d+)\/force-submit$/);
+    if (method === 'POST' && forceSubmitMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      const sessionId = Number(forceSubmitMatch[1]);
+
+      const { data: session } = await supabase
+        .from('exam_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (!session) {
+        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      }
+
+      if (session.status === 'SUBMITTED') {
+        return jsonResponse(
+          req,
+          { error: 'Sesi ujian ini sudah berstatus selesai/dikumpulkan.' },
+          400
+        );
+      }
+
+      const finalized = await gradeAndFinalizeSession(supabase, session.id, session.package_id);
+
+      await broadcastPackageEvent(supabase, {
+        type: 'session:updated',
+        packageId: session.package_id,
+        studentId: session.student_id,
+        sessionId: session.id,
+        payload: { status: 'SUBMITTED', reason: 'FORCE_SUBMITTED' },
+        timestamp: Date.now(),
+      });
+
+      return jsonResponse(req, {
+        success: true,
+        sessionId,
+        status: 'SUBMITTED',
+        score: finalized.score,
+        correctCount: finalized.correctCount,
+        totalQuestions: finalized.totalQuestions,
+      });
+    }
+
+    const extendTimeMatch = path.match(/^\/sessions\/(\d+)\/extend-time$/);
+    if (method === 'POST' && extendTimeMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      const sessionId = Number(extendTimeMatch[1]);
+
+      const { extraMinutes = 10 } = await readJsonBody<{ extraMinutes?: number }>(req);
+      const cleanMinutes = Math.max(1, Math.min(60, Math.round(Number(extraMinutes) || 10)));
+
+      const { data: session } = await supabase
+        .from('exam_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (!session) {
+        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      }
+
+      if (session.status === 'SUBMITTED') {
+        return jsonResponse(
+          req,
+          { error: 'Tidak dapat menambah waktu untuk sesi yang sudah selesai.' },
+          400
+        );
+      }
+
+      const nextExpiresAt = Math.max(session.expires_at, Date.now()) + cleanMinutes * 60 * 1000;
+      await supabase
+        .from('exam_sessions')
+        .update({ expires_at: nextExpiresAt })
+        .eq('id', sessionId);
+
+      await broadcastPackageEvent(supabase, {
+        type: 'session:updated',
+        packageId: session.package_id,
+        studentId: session.student_id,
+        sessionId: session.id,
+        payload: { status: session.status, extraMinutes: cleanMinutes },
+        timestamp: Date.now(),
+      });
+
+      return jsonResponse(req, {
+        success: true,
+        sessionId,
+        expiresAt: nextExpiresAt,
+        extraMinutes: cleanMinutes,
+      });
+    }
+
     const pkgRecapMatch = path.match(/^\/packages\/(\d+)\/recap(\/csv)?$/);
     if (method === 'GET' && pkgRecapMatch) {
       const auth = await requireTeacherAuth(req, supabase);
@@ -2707,6 +3098,7 @@ Deno.serve(async (req: Request) => {
         const cls = st.classes as { name: string } | null;
         const es = sessionByStudent.get(st.id as number);
         return {
+          session_id: es?.id ?? null,
           nis: st.nis as string,
           name: st.name as string,
           class_name: cls?.name || '',
@@ -2756,6 +3148,85 @@ Deno.serve(async (req: Request) => {
         });
       }
 
+      const { data: questions } = await supabase
+        .from('questions')
+        .select('id, question_text, options_json, correct_option, points')
+        .eq('package_id', pkgId)
+        .order('id', { ascending: true });
+
+      const submittedSessionIds = (sessions || [])
+        .filter((s: SessionRow) => s.status === 'SUBMITTED')
+        .map((s: SessionRow) => s.id);
+
+      const answerByQuestion = new Map<number, string[]>();
+      if (submittedSessionIds.length > 0) {
+        const { data: ansRows } = await supabase
+          .from('student_answers')
+          .select('question_id, selected_option')
+          .in('session_id', submittedSessionIds);
+
+        for (const a of (ansRows || []) as Array<{ question_id: number; selected_option: string }>) {
+          const list = answerByQuestion.get(a.question_id) || [];
+          list.push(a.selected_option);
+          answerByQuestion.set(a.question_id, list);
+        }
+      }
+
+      const totalSubmitted = submittedSessionIds.length;
+      const questionAnalytics = (questions || []).map(
+        (
+          q: {
+            id: number;
+            question_text: string;
+            options_json: string;
+            correct_option: string;
+            points: number;
+          },
+          index: number
+        ) => {
+          let parsedOptions: Array<{ key: string; text: string }> = [];
+          try {
+            parsedOptions = JSON.parse(q.options_json);
+          } catch {
+            parsedOptions = [];
+          }
+          const optionDistribution: Record<string, number> = {};
+          for (const opt of parsedOptions) {
+            optionDistribution[opt.key] = 0;
+          }
+
+          const answers = answerByQuestion.get(q.id) || [];
+          let correctCount = 0;
+          let wrongCount = 0;
+          for (const sel of answers) {
+            if (sel) {
+              optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
+            }
+            if (sel === q.correct_option) {
+              correctCount++;
+            } else if (sel) {
+              wrongCount++;
+            }
+          }
+          const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
+          const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
+
+          return {
+            questionId: q.id,
+            number: index + 1,
+            questionText: q.question_text,
+            correctOption: q.correct_option,
+            points: q.points,
+            totalSubmitted,
+            correctCount,
+            wrongCount,
+            blankCount,
+            correctRate,
+            optionDistribution,
+          };
+        }
+      );
+
       const subj = pkg.subjects as unknown as { name: string } | null;
       const cls = pkg.classes as unknown as { name: string } | null;
 
@@ -2768,6 +3239,113 @@ Deno.serve(async (req: Request) => {
           totalQuestions,
         },
         records,
+        questionAnalytics,
+      });
+    }
+
+    const sessionReviewMatch = path.match(/^\/sessions\/(\d+)\/review$/);
+    if (method === 'GET' && sessionReviewMatch) {
+      const auth = await requireTeacherAuth(req, supabase);
+      if (auth.errorResponse) return auth.errorResponse;
+      const sessionId = Number(sessionReviewMatch[1]);
+
+      const { data: session } = await supabase
+        .from('exam_sessions')
+        .select('id, package_id, student_id, status, score, correct_count, total_questions, violation_count, started_at, submitted_at')
+        .eq('id', sessionId)
+        .maybeSingle();
+
+      if (!session) {
+        return jsonResponse(req, { error: 'Sesi ujian tidak ditemukan.' }, 404);
+      }
+
+      const [{ data: student }, { data: pkg }, { data: questions }, { data: ansRows }] = await Promise.all([
+        supabase
+          .from('students')
+          .select('nis, name, classes(name)')
+          .eq('id', session.student_id)
+          .maybeSingle(),
+        supabase
+          .from('exam_packages')
+          .select('id, title, subjects(name), classes(name)')
+          .eq('id', session.package_id)
+          .maybeSingle(),
+        supabase
+          .from('questions')
+          .select('id, question_text, options_json, correct_option, points')
+          .eq('package_id', session.package_id)
+          .order('id', { ascending: true }),
+        supabase
+          .from('student_answers')
+          .select('question_id, selected_option')
+          .eq('session_id', sessionId),
+      ]);
+
+      const ansMap = new Map(
+        ((ansRows || []) as Array<{ question_id: number; selected_option: string }>).map((a) => [
+          a.question_id,
+          a.selected_option,
+        ])
+      );
+
+      const items = (questions || []).map(
+        (
+          q: {
+            id: number;
+            question_text: string;
+            options_json: string;
+            correct_option: string;
+            points: number;
+          },
+          idx: number
+        ) => {
+          let options: Array<{ key: string; text: string }> = [];
+          try {
+            options = JSON.parse(q.options_json);
+          } catch {
+            options = [];
+          }
+          const selectedOption = ansMap.get(q.id) || null;
+          return {
+            questionId: q.id,
+            number: idx + 1,
+            questionText: q.question_text,
+            options,
+            correctOption: q.correct_option,
+            selectedOption,
+            isCorrect: selectedOption === q.correct_option,
+            points: q.points,
+          };
+        }
+      );
+
+      const stCls = (student?.classes as unknown as { name: string } | null)?.name || '';
+      const pkgSubj = (pkg?.subjects as unknown as { name: string } | null)?.name || '';
+      const pkgCls = (pkg?.classes as unknown as { name: string } | null)?.name || '';
+
+      return jsonResponse(req, {
+        session: {
+          id: session.id,
+          status: session.status,
+          score: session.score,
+          correctCount: session.correct_count,
+          totalQuestions: session.total_questions || items.length,
+          violationCount: session.violation_count,
+          startedAt: session.started_at,
+          submittedAt: session.submitted_at,
+        },
+        student: {
+          nis: student?.nis || '',
+          name: student?.name || '',
+          className: stCls,
+        },
+        package: {
+          id: session.package_id,
+          title: pkg?.title || '',
+          subjectName: pkgSubj,
+          className: pkgCls,
+        },
+        items,
       });
     }
 

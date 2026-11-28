@@ -157,6 +157,39 @@ export const teacherApi = {
     return parseJsonResponse<{ success: boolean }>(res);
   },
 
+  async getClasses(token: string) {
+    const res = await fetch(resolveApiUrl('/api/classes'), {
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ classes: import('./types').ClassItem[] }>(res);
+  },
+
+  async createClass(token: string, body: { name: string; gradeLevel?: number }) {
+    const res = await fetch(resolveApiUrl('/api/classes'), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ class: import('./types').ClassItem }>(res);
+  },
+
+  async updateClass(token: string, id: number, body: { name?: string; gradeLevel?: number }) {
+    const res = await fetch(resolveApiUrl(`/api/classes/${id}`), {
+      method: 'PUT',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ class: import('./types').ClassItem }>(res);
+  },
+
+  async deleteClass(token: string, id: number) {
+    const res = await fetch(resolveApiUrl(`/api/classes/${id}`), {
+      method: 'DELETE',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean }>(res);
+  },
+
   async getAdminTeachers(token: string) {
     const res = await fetch(resolveApiUrl('/api/admin/teachers'), {
       headers: buildApiHeaders(token),
@@ -339,6 +372,23 @@ export const teacherApi = {
     return parseJsonResponse<{ student: import('./types').StudentRecord; generatedPin: string }>(res);
   },
 
+  async updateStudent(token: string, studentId: number, body: { nis: string; name: string; classId: number }) {
+    const res = await fetch(resolveApiUrl(`/api/students/${studentId}`), {
+      method: 'PUT',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    });
+    return parseJsonResponse<{ student: import('./types').StudentRecord }>(res);
+  },
+
+  async deleteStudent(token: string, studentId: number) {
+    const res = await fetch(resolveApiUrl(`/api/students/${studentId}`), {
+      method: 'DELETE',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean }>(res);
+  },
+
   async resetStudentPin(token: string, studentId: number, customPin?: string) {
     const res = await fetch(resolveApiUrl(`/api/students/${studentId}/reset-pin`), {
       method: 'POST',
@@ -372,6 +422,43 @@ export const teacherApi = {
     return parseJsonResponse<{ success: boolean; sessionId: number; status: string }>(res);
   },
 
+  async resetSessionDevice(token: string, sessionId: number) {
+    const res = await fetch(resolveApiUrl(`/api/sessions/${sessionId}/reset-device`), {
+      method: 'POST',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{ success: boolean; sessionId: number; status: string }>(res);
+  },
+
+  async forceSubmitSession(token: string, sessionId: number) {
+    const res = await fetch(resolveApiUrl(`/api/sessions/${sessionId}/force-submit`), {
+      method: 'POST',
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<{
+      success: boolean;
+      sessionId: number;
+      status: string;
+      score: number;
+      correctCount: number;
+      totalQuestions: number;
+    }>(res);
+  },
+
+  async extendSessionTime(token: string, sessionId: number, extraMinutes = 10) {
+    const res = await fetch(resolveApiUrl(`/api/sessions/${sessionId}/extend-time`), {
+      method: 'POST',
+      headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ extraMinutes }),
+    });
+    return parseJsonResponse<{
+      success: boolean;
+      sessionId: number;
+      expiresAt: number;
+      extraMinutes: number;
+    }>(res);
+  },
+
   async getRecap(token: string, packageId: number) {
     const res = await fetch(resolveApiUrl(`/api/packages/${packageId}/recap`), {
       headers: buildApiHeaders(token),
@@ -379,7 +466,15 @@ export const teacherApi = {
     return parseJsonResponse<{
       package: { id: number; title: string; subjectName: string; className: string; totalQuestions: number };
       records: import('./types').RecapRow[];
+      questionAnalytics?: import('./types').QuestionAnalyticRow[];
     }>(res);
+  },
+
+  async getSessionReview(token: string, sessionId: number) {
+    const res = await fetch(resolveApiUrl(`/api/sessions/${sessionId}/review`), {
+      headers: buildApiHeaders(token),
+    });
+    return parseJsonResponse<import('./types').SessionReviewPayload>(res);
   },
 
   async downloadRecapCsv(token: string, packageId: number, filename: string) {
