@@ -14,6 +14,7 @@ import {
   Sparkles,
   Info,
   AlertCircle,
+  Search,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type {
@@ -89,6 +90,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // New Package Modal state
   const [showNewPkgModal, setShowNewPkgModal] = useState(false);
@@ -116,8 +118,22 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   useEffect(() => {
     if (!activePkgId) return;
+    setSearchQuery('');
     loadQuestions(activePkgId);
   }, [activePkgId]);
+
+  useEffect(() => {
+    if (!showNewPkgModal && !showImportModal && !showEditor) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowNewPkgModal(false);
+        setShowImportModal(false);
+        setShowEditor(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showNewPkgModal, showImportModal, showEditor]);
 
   async function loadQuestions(pkgId: number) {
     setLoading(true);
@@ -309,6 +325,15 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
     .map((l) => l.trim())
     .filter((l) => l.length > 0).length;
 
+  const filteredQuestions = questions.filter((q) => {
+    if (!searchQuery.trim()) return true;
+    const term = searchQuery.trim().toLowerCase();
+    return (
+      q.question_text.toLowerCase().includes(term) ||
+      q.options.some((o) => o.text.toLowerCase().includes(term))
+    );
+  });
+
   return (
     <div className="space-y-6">
       <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
@@ -376,9 +401,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
         </div>
       )}
 
-      <div className="min-h-[24px] flex items-center justify-between gap-4 px-1 text-xs text-slate-600 overflow-x-hidden">
+      <div className="min-h-[24px] flex flex-wrap items-center justify-between gap-3 px-1 text-xs text-slate-600 overflow-x-hidden">
         {activePkg ? (
-          <div className="flex items-center gap-3 overflow-x-hidden min-w-0">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 overflow-x-hidden min-w-0">
             <span className="whitespace-nowrap truncate">Mapel: <strong className="text-slate-900">{activePkg.subject_name}</strong></span>
             <span aria-hidden="true" className="shrink-0">·</span>
             <span className="whitespace-nowrap shrink-0">Kelas: <strong className="text-slate-900">{activePkg.class_name}</strong></span>
@@ -394,9 +419,33 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
         ) : (
           <span />
         )}
-        <span className="w-24 text-right font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0">
-          {loading && hasLoaded ? 'Memuat...' : ''}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {questions.length > 0 && (
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari teks soal..."
+                className="pl-8 pr-7 py-1.5 text-xs bg-white border border-slate-300 rounded-lg w-48 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                  aria-label="Hapus pencarian soal"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
+          {loading && hasLoaded && (
+            <span className="font-mono text-[11px] text-slate-400 whitespace-nowrap shrink-0">Memuat...</span>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -435,13 +484,27 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               </button>
             </div>
           </div>
+        ) : filteredQuestions.length === 0 ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
+            <Search className="w-7 h-7 text-slate-400 mx-auto mb-2" />
+            <p className="text-sm font-semibold text-slate-800">Tidak ada soal yang cocok dengan &ldquo;{searchQuery}&rdquo;</p>
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="mt-3 px-3.5 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 cursor-pointer"
+            >
+              Tampilkan Semua Soal ({questions.length})
+            </button>
+          </div>
         ) : (
           <div className="space-y-4">
-          {questions.map((q, idx) => (
+          {filteredQuestions.map((q) => {
+            const originalNumber = questions.findIndex((item) => item.id === q.id) + 1;
+            return (
             <div key={q.id} className="bg-white border border-slate-200 rounded-xl p-6">
               <div className="flex items-start justify-between gap-4 mb-3">
                 <div className="flex items-center gap-2 text-xs text-slate-500 tabular-nums">
-                  <span className="font-mono font-semibold text-slate-800">Soal #{idx + 1}</span>
+                  <span className="font-mono font-semibold text-slate-800">Soal #{originalNumber}</span>
                   <span aria-hidden="true">·</span>
                   <span>ID Server: {q.id}</span>
                   <span aria-hidden="true">·</span>
@@ -517,14 +580,20 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                 })}
               </div>
             </div>
-          ))}
+            );
+          })}
           </div>
         )}
       </div>
 
       {/* Modal Tambah Paket Baru */}
       {showNewPkgModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowNewPkgModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -689,7 +758,12 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
       {/* Modal Import Soal (stabil dengan tinggi konsisten, tab, dan footer tetap) */}
       {showImportModal && activePkg && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowImportModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl h-[84vh] max-h-[720px] min-h-[520px] flex flex-col overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
               <div className="min-w-0">
@@ -937,7 +1011,12 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
       {/* Modal Tambah / Edit Soal Tunggal */}
       {showEditor && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowEditor(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-lg font-bold text-slate-900">

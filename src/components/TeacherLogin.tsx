@@ -40,17 +40,9 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
           </span>
         </div>
 
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
-          <span className="text-slate-900 whitespace-nowrap shrink-0">Portal Guru & Pengawas</span>
-          <span className="text-slate-300" aria-hidden="true">/</span>
-          <button
-            type="button"
-            onClick={onOpenStudentPortal}
-            className="hover:text-blue-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Simulasi APK Exambro Siswa
-          </button>
-        </nav>
+        <div className="hidden md:flex items-center text-xs font-medium text-slate-500">
+          Portal Guru &amp; Pengawas Ujian
+        </div>
 
         <div className="shrink-0">
           <button
@@ -59,7 +51,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Smartphone className="w-4 h-4" aria-hidden="true" />
-            Masuk Portal Ujian Siswa
+            Portal Ujian Siswa
           </button>
         </div>
       </header>
@@ -82,7 +74,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
               <div className="space-y-4 border-t border-slate-100 pt-6 text-sm">
                 <div className="flex items-start justify-between gap-4">
                   <span className="font-medium text-slate-800">Multi-Mapel & Multi-Kelas</span>
-                  <span className="text-xs text-slate-500 text-right">Matematika, IPA, Informatika</span>
+                  <span className="text-xs text-slate-500 text-right">Dikelola terpusat lewat Master Data</span>
                 </div>
                 <div className="flex items-start justify-between gap-4">
                   <span className="font-medium text-slate-800">Keamanan PIN & QR</span>
@@ -90,7 +82,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
                 </div>
                 <div className="flex items-start justify-between gap-4">
                   <span className="font-medium text-slate-800">Live Proctoring</span>
-                  <span className="text-xs text-slate-500 text-right">WebSocket + Buka Kunci Instan</span>
+                  <span className="text-xs text-slate-500 text-right">Monitoring & Kontrol Sesi Langsung</span>
                 </div>
               </div>
             </div>

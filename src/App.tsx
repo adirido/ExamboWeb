@@ -19,10 +19,12 @@ function parseRouteFromLocation(): {
   const rawToken = hashParams.get('token') ?? searchParams.get('token') ?? '';
   const rawNis = hashParams.get('nis') ?? searchParams.get('nis') ?? '';
   const rawPin = hashParams.get('pin') ?? searchParams.get('pin') ?? '';
+  const rawSim = hashParams.get('sim') ?? searchParams.get('sim') ?? '';
 
   const token = rawToken.trim().toUpperCase() || undefined;
   const nis = rawNis.trim() || undefined;
   const pin = rawPin.trim() || undefined;
+  const isSimulator = rawSim === '1' || rawSim.toLowerCase() === 'true';
 
   const isStudentRoute =
     normalizedPath === 'exam' ||
@@ -36,6 +38,7 @@ function parseRouteFromLocation(): {
       nis,
       pin,
       hasExplicitParams: Boolean(token || nis || pin),
+      isSimulator,
     },
   };
 }
@@ -76,8 +79,8 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  function openStudentPortal() {
-    window.location.hash = '#/exam';
+  function openStudentPortal(simulator = false) {
+    window.location.hash = simulator ? '#/exam?sim=1' : '#/exam';
     setRouteState(parseRouteFromLocation());
   }
 
@@ -122,7 +125,7 @@ export default function App() {
     return (
       <TeacherLogin
         onSuccess={handleTeacherLogin}
-        onOpenStudentPortal={openStudentPortal}
+        onOpenStudentPortal={() => openStudentPortal(false)}
       />
     );
   }
@@ -132,7 +135,7 @@ export default function App() {
       token={teacherToken}
       teacher={teacherProfile}
       onLogout={handleTeacherLogout}
-      onOpenStudentPortal={openStudentPortal}
+      onOpenStudentPortal={() => openStudentPortal(true)}
     />
   );
 }

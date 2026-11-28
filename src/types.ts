@@ -112,6 +112,7 @@ export interface StudentExamRouteParams {
   nis?: string;
   pin?: string;
   hasExplicitParams: boolean;
+  isSimulator?: boolean;
 }
 
 export interface ResolvedExamPackage {

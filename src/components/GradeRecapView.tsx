@@ -30,6 +30,20 @@ interface GradeRecapViewProps {
 
 type RecapSubTab = 'scores' | 'analytics';
 type RecapFilterMode = 'ALL' | 'PASSED' | 'REMEDIAL' | 'INCOMPLETE' | 'VIOLATION';
+type RecapSortMode = 'name' | 'nis' | 'score-desc' | 'score-asc';
+
+const KKM_STORAGE_KEY = 'examflow_recap_kkm';
+
+function readInitialKkm(): number {
+  try {
+    const raw = window.localStorage.getItem(KKM_STORAGE_KEY);
+    const num = raw ? Number(raw) : 75;
+    if (Number.isFinite(num) && num >= 0 && num <= 100) return num;
+  } catch {
+    // ignore storage errors
+  }
+  return 75;
+}
 
 export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   token,
@@ -53,14 +67,35 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const [subTab, setSubTab] = useState<RecapSubTab>('scores');
-  const [kkm, setKkm] = useState<number>(75);
+  const [kkm, setKkm] = useState<number>(() => readInitialKkm());
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<RecapFilterMode>('ALL');
+  const [sortBy, setSortBy] = useState<RecapSortMode>('name');
 
   // Student answer sheet review modal
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewData, setReviewData] = useState<SessionReviewPayload | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(KKM_STORAGE_KEY, String(kkm));
+    } catch {
+      // ignore storage errors
+    }
+  }, [kkm]);
+
+  useEffect(() => {
+    if (!reviewLoading && !reviewData) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setReviewLoading(false);
+        setReviewData(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [reviewLoading, reviewData]);
 
   useEffect(() => {
     if (!activePkgId) return;
@@ -135,27 +170,42 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   const passRate =
     submittedRecords.length > 0 ? Math.round((passedCount / submittedRecords.length) * 100) : 0;
 
-  const filteredRecords = records.filter((r) => {
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      if (!r.nis.toLowerCase().includes(q) && !r.name.toLowerCase().includes(q)) {
-        return false;
+  const filteredRecords = records
+    .filter((r) => {
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        if (!r.nis.toLowerCase().includes(q) && !r.name.toLowerCase().includes(q)) {
+          return false;
+        }
       }
-    }
-    if (filterMode === 'PASSED') {
-      return r.status === 'SUBMITTED' && r.score !== null && r.score >= kkm;
-    }
-    if (filterMode === 'REMEDIAL') {
-      return r.status === 'SUBMITTED' && r.score !== null && r.score < kkm;
-    }
-    if (filterMode === 'INCOMPLETE') {
-      return r.status !== 'SUBMITTED';
-    }
-    if (filterMode === 'VIOLATION') {
-      return r.violation_count > 0;
-    }
-    return true;
-  });
+      if (filterMode === 'PASSED') {
+        return r.status === 'SUBMITTED' && r.score !== null && r.score >= kkm;
+      }
+      if (filterMode === 'REMEDIAL') {
+        return r.status === 'SUBMITTED' && r.score !== null && r.score < kkm;
+      }
+      if (filterMode === 'INCOMPLETE') {
+        return r.status !== 'SUBMITTED';
+      }
+      if (filterMode === 'VIOLATION') {
+        return r.violation_count > 0;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'nis') return a.nis.localeCompare(b.nis);
+      if (sortBy === 'score-desc') {
+        const sa = a.status === 'SUBMITTED' && a.score !== null ? Number(a.score) : -1;
+        const sb = b.status === 'SUBMITTED' && b.score !== null ? Number(b.score) : -1;
+        return sb - sa || a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'score-asc') {
+        const sa = a.status === 'SUBMITTED' && a.score !== null ? Number(a.score) : 9999;
+        const sb = b.status === 'SUBMITTED' && b.score !== null ? Number(b.score) : 9999;
+        return sa - sb || a.name.localeCompare(b.name);
+      }
+      return a.name.localeCompare(b.name);
+    });
 
   function getDifficultyBadge(rate: number, totalSubmitted: number) {
     if (totalSubmitted === 0) {
@@ -326,8 +376,18 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Cari NIS atau nama..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  className="w-full pl-8 pr-7 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                    aria-label="Hapus pencarian"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
               </div>
               <select
                 aria-label="Filter Status Nilai"
@@ -340,6 +400,17 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                 <option value="REMEDIAL">Remedial (&lt; {kkm})</option>
                 <option value="INCOMPLETE">Belum Selesai</option>
                 <option value="VIOLATION">Ada Pelanggaran</option>
+              </select>
+              <select
+                aria-label="Urutkan Daftar Nilai"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as RecapSortMode)}
+                className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-700"
+              >
+                <option value="name">Urutkan: Nama A–Z</option>
+                <option value="nis">Urutkan: NIS</option>
+                <option value="score-desc">Urutkan: Nilai Tertinggi</option>
+                <option value="score-asc">Urutkan: Nilai Terendah</option>
               </select>
             </>
           )}
@@ -595,7 +666,15 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
 
       {/* Modal Review Lembar Jawaban Siswa */}
       {(reviewLoading || reviewData) && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setReviewLoading(false);
+              setReviewData(null);
+            }
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden shadow-xl">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
               {reviewLoading ? (

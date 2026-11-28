@@ -12,6 +12,9 @@ import {
   Save,
   KeyRound,
   Loader2,
+  Eye,
+  EyeOff,
+  Flag,
 } from 'lucide-react';
 import { exambroApi } from '../api';
 import { subscribeStudentUnlock } from '../realtimeClient';
@@ -43,6 +46,8 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   onBackToTeacher,
 }) => {
   const isDirectStudentMode = routeParams.hasExplicitParams;
+  const [simulatorMode, setSimulatorMode] = useState<boolean>(() => Boolean(routeParams.isSimulator));
+  const [showPin, setShowPin] = useState(false);
 
   // Entry / QR Verification state
   const [activePackages, setActivePackages] = useState<PublicActivePackage[]>([]);
@@ -51,12 +56,14 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   const [resolvingToken, setResolvingToken] = useState(false);
 
   const [tokenUjian, setTokenUjian] = useState(routeParams.token || '');
-  const [nis, setNis] = useState(routeParams.nis ?? (isDirectStudentMode ? '' : '20260801'));
+  const [nis, setNis] = useState(
+    routeParams.nis ?? (routeParams.isSimulator && !isDirectStudentMode ? '20260801' : '')
+  );
   const [pinSemester, setPinSemester] = useState(
-    routeParams.pin ?? (isDirectStudentMode ? '' : '123456')
+    routeParams.pin ?? (routeParams.isSimulator && !isDirectStudentMode ? '123456' : '')
   );
   const [deviceId, setDeviceId] = useState(() =>
-    isDirectStudentMode ? 'WEB-STUDENT-DIRECT' : 'ANDROID-EXAMBRO-SIM-01'
+    routeParams.isSimulator && !isDirectStudentMode ? 'ANDROID-EXAMBRO-SIM-01' : 'WEB-STUDENT-PORTAL'
   );
   const [entryError, setEntryError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -66,6 +73,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   const [examData, setExamData] = useState<StudentExamSessionData | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [flaggedIds, setFlaggedIds] = useState<Record<number, boolean>>({});
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [savingAnswer, setSavingAnswer] = useState(false);
   const [lastSavedText, setLastSavedText] = useState<string | null>(null);
@@ -85,10 +93,13 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
 
   // Sync URL hash params (#/exam?token=...&nis=...&pin=...) when opening or changing hash
   useEffect(() => {
+    const nextSim = Boolean(routeParams.isSimulator) && !routeParams.hasExplicitParams;
     const nextToken = routeParams.token || '';
-    const nextNis = routeParams.nis ?? (routeParams.hasExplicitParams ? '' : '20260801');
-    const nextPin = routeParams.pin ?? (routeParams.hasExplicitParams ? '' : '123456');
+    const nextNis = routeParams.nis ?? (nextSim ? '20260801' : '');
+    const nextPin = routeParams.pin ?? (nextSim ? '123456' : '');
 
+    setSimulatorMode(nextSim);
+    setShowPin(false);
     setTokenUjian(nextToken);
     setNis(nextNis);
     setPinSemester(nextPin);
@@ -96,12 +107,13 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
     setDecodedPackage(null);
     setQrPayloadInput('');
     setAutoTabGuard(routeParams.hasExplicitParams);
-    setDeviceId(routeParams.hasExplicitParams ? 'WEB-STUDENT-DIRECT' : 'ANDROID-EXAMBRO-SIM-01');
+    setDeviceId(nextSim ? 'ANDROID-EXAMBRO-SIM-01' : 'WEB-STUDENT-PORTAL');
 
     if (routeParams.hasExplicitParams) {
       // Reset active session if navigating to a fresh exam link
       setSessionToken(null);
       setExamData(null);
+      setFlaggedIds({});
     }
 
     let cancelled = false;
@@ -233,6 +245,9 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
           : 'Exambro Web Simulator v2.4',
       });
       setSessionToken(res.sessionToken);
+      setFlaggedIds({});
+      setLastSavedText(null);
+      setShowSubmitConfirm(false);
       await loadExamSession(res.sessionToken);
       setCurrentIdx(0);
     } catch (err) {
@@ -295,6 +310,33 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [autoTabGuard, sessionToken, examData?.status]);
+
+  // Keyboard arrow navigation between questions in active workspace
+  useEffect(() => {
+    if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS') return;
+    const total = examData.questions.length;
+    if (total === 0) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentIdx((i) => Math.max(0, i - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setCurrentIdx((i) => Math.min(total - 1, i + 1));
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [sessionToken, examData?.status, examData?.questions.length]);
+
+  function toggleFlagQuestion(questionId: number) {
+    setFlaggedIds((prev) => ({
+      ...prev,
+      [questionId]: !prev[questionId],
+    }));
+  }
 
   async function handleSelectAnswer(questionId: number, originalKey: string) {
     if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS') return;
@@ -454,14 +496,24 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   PIN Semester
                 </label>
-                <input
-                  type="password"
-                  required
-                  value={pinSemester}
-                  onChange={(e) => setPinSemester(e.target.value)}
-                  placeholder="Masukkan PIN Semester (4–6 digit)"
-                  className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <input
+                    type={showPin ? 'text' : 'password'}
+                    required
+                    value={pinSemester}
+                    onChange={(e) => setPinSemester(e.target.value)}
+                    placeholder="Masukkan PIN Semester (4–6 digit)"
+                    className="w-full pl-3.5 pr-10 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPin((prev) => !prev)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded-md transition-colors cursor-pointer"
+                    aria-label={showPin ? 'Sembunyikan PIN' : 'Lihat PIN'}
+                  >
+                    {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
                 <p className="text-[11px] text-slate-500 mt-1">
                   PIN Semester berlaku universal untuk seluruh mata pelajaran pada semester ini.
                 </p>
@@ -487,40 +539,69 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   if (!sessionToken || !examData) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col">
-        <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between gap-6">
+        <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5 whitespace-nowrap shrink-0">
             <Smartphone className="w-5 h-5 text-blue-700" aria-hidden="true" />
-            <span className="font-display text-lg font-bold text-slate-900">Exambro Student Portal</span>
+            <span className="font-display text-lg font-bold text-slate-900">
+              {simulatorMode ? 'Simulator Exambro Pengawas' : 'Portal Ujian Siswa'}
+            </span>
           </div>
-          <button
-            type="button"
-            onClick={onBackToTeacher}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            Kembali ke Dasbor Guru
-          </button>
+          <div className="flex items-center gap-2.5">
+            {routeParams.isSimulator && (
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !simulatorMode;
+                  setSimulatorMode(next);
+                  if (!next) {
+                    setNis('');
+                    setPinSemester('');
+                    setDeviceId('WEB-STUDENT-PORTAL');
+                  } else {
+                    setNis('20260801');
+                    setPinSemester('123456');
+                    setDeviceId('ANDROID-EXAMBRO-SIM-01');
+                  }
+                }}
+                className="px-3 py-2 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 whitespace-nowrap cursor-pointer"
+              >
+                {simulatorMode ? 'Lihat Mode Siswa' : 'Aktifkan Simulator'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onBackToTeacher}
+              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              {simulatorMode ? 'Kembali ke Dasbor Guru' : 'Login Guru'}
+            </button>
+          </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center p-6">
           <div className="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-            {/* Left: QR Scanner Simulator */}
+            {/* Left: Active Exam Package Picker (Clean for Students, QR Payload tools only in Simulator) */}
             <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between">
               <div>
                 <div className="flex items-center gap-2 text-xs font-semibold text-blue-700 mb-2">
                   <QrCode className="w-4 h-4" />
-                  Langkah 1 · Pilih Paket atau Pindai QR
+                  {simulatorMode ? 'Langkah 1 · Pilih Paket atau Pindai QR' : 'Langkah 1 · Pilih Paket Ujian'}
                 </div>
-                <h2 className="font-display text-lg font-bold text-slate-900">Simulasi Scan QR Exambro</h2>
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  {simulatorMode ? 'Simulasi Scan QR Exambro' : 'Paket Ujian Aktif'}
+                </h2>
                 <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  Pilih paket aktif di bawah untuk menguji masuk ujian, atau langsung isi Token Ujian pada formulir di samping.
+                  {simulatorMode
+                    ? 'Pilih paket aktif di bawah untuk menguji masuk ujian, atau langsung isi Token Ujian pada formulir di samping.'
+                    : 'Pilih jadwal ujian Anda di bawah ini, lalu masukkan Token Ujian, NIS, dan PIN Semester.'}
                 </p>
 
                 <div className="mt-5 space-y-2.5">
                   <label className="block text-xs font-semibold text-slate-700">Paket Ujian Aktif Tersedia</label>
                   {activePackages.length === 0 ? (
                     <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-500">
-                      Belum ada paket ujian yang diaktifkan guru.
+                      Belum ada paket ujian yang diaktifkan pengawas saat ini.
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -548,32 +629,40 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                   )}
                 </div>
 
-                <div className="mt-4">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Atau Tempel Payload QR Terenkripsi (ef1...)
-                  </label>
-                  <input
-                    type="text"
-                    value={qrPayloadInput}
-                    onChange={(e) => handleSelectQrPackage(e.target.value)}
-                    placeholder="ef1...."
-                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-slate-50"
-                  />
-                </div>
+                {simulatorMode && (
+                  <div className="mt-4">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Atau Tempel Payload QR Terenkripsi (ef1...)
+                    </label>
+                    <input
+                      type="text"
+                      value={qrPayloadInput}
+                      onChange={(e) => handleSelectQrPackage(e.target.value)}
+                      placeholder="ef1...."
+                      className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-slate-50"
+                    />
+                  </div>
+                )}
               </div>
 
-              <div className="mt-6 pt-4 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
-                <div className="font-semibold text-slate-700">Data Uji Coba Siswa (Kelas 8A):</div>
-                <div>NIS: <span className="font-mono text-slate-800">20260801</span> (Ahmad Fauzi) · PIN: <span className="font-mono text-slate-800">123456</span></div>
-                <div>NIS: <span className="font-mono text-slate-800">20260804</span> (Zahra — Terkunci Pelanggaran) · PIN: <span className="font-mono text-slate-800">123456</span></div>
-                <div>Token Ujian lihat di Dasbor Guru (seed awal: <span className="font-mono text-slate-800">MTK8A1</span>)</div>
-              </div>
+              {simulatorMode ? (
+                <div className="mt-6 pt-4 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
+                  <div className="font-semibold text-slate-700">Data Uji Coba Pengawas (Kelas 8A):</div>
+                  <div>NIS: <span className="font-mono text-slate-800">20260801</span> (Ahmad Fauzi) · PIN: <span className="font-mono text-slate-800">123456</span></div>
+                  <div>NIS: <span className="font-mono text-slate-800">20260804</span> (Zahra — Terkunci) · PIN: <span className="font-mono text-slate-800">123456</span></div>
+                  <div>Token Ujian lihat di menu Paket Ujian (awal: <span className="font-mono text-slate-800">MTK8A1</span>)</div>
+                </div>
+              ) : (
+                <div className="mt-6 pt-4 border-t border-slate-100 text-[11px] text-slate-500 leading-relaxed">
+                  Pastikan Anda mendapatkan <strong className="text-slate-700">Token Ujian</strong> dari pengawas ruang dan gunakan <strong className="text-slate-700">NIS + PIN Semester</strong> pribadi Anda.
+                </div>
+              )}
             </div>
 
             {/* Right: Exambro Entry Verification Form */}
             <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-center">
               <div className="mb-5">
-                <div className="text-xs font-semibold text-blue-700 mb-1">Langkah 2 · Verifikasi Peserta & Token</div>
+                <div className="text-xs font-semibold text-blue-700 mb-1">Langkah 2 · Verifikasi Peserta &amp; Token</div>
                 <h2 className="font-display text-xl font-bold text-slate-900">
                   {decodedPackage ? decodedPackage.title : 'Masuk Menggunakan Token Ujian'}
                 </h2>
@@ -613,40 +702,52 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                       required
                       value={nis}
                       onChange={(e) => setNis(e.target.value)}
-                      placeholder="20260801"
+                      placeholder="Masukkan NIS"
                       className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">PIN Semester (6 Digit)</label>
-                    <input
-                      type="password"
-                      required
-                      value={pinSemester}
-                      onChange={(e) => setPinSemester(e.target.value)}
-                      placeholder="••••••"
-                      className="w-full px-3.5 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">PIN Semester (4–6 Digit)</label>
+                    <div className="relative">
+                      <input
+                        type={showPin ? 'text' : 'password'}
+                        required
+                        value={pinSemester}
+                        onChange={(e) => setPinSemester(e.target.value)}
+                        placeholder="••••••"
+                        className="w-full pl-3.5 pr-10 py-2.5 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPin((prev) => !prev)}
+                        className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded-md transition-colors cursor-pointer"
+                        aria-label={showPin ? 'Sembunyikan PIN' : 'Lihat PIN'}
+                      >
+                        {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Device ID (Dikirim APK Exambro)</label>
-                  <input
-                    type="text"
-                    required
-                    value={deviceId}
-                    onChange={(e) => setDeviceId(e.target.value)}
-                    className="w-full px-3.5 py-2 text-xs font-mono text-slate-600 bg-slate-50 border border-slate-200 rounded-lg"
-                  />
-                </div>
+                {simulatorMode && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Device ID (Simulasi APK Exambro)</label>
+                    <input
+                      type="text"
+                      required
+                      value={deviceId}
+                      onChange={(e) => setDeviceId(e.target.value)}
+                      className="w-full px-3.5 py-2 text-xs font-mono text-slate-600 bg-slate-50 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                )}
 
                 <button
                   type="submit"
                   disabled={verifying || !tokenUjian.trim()}
                   className="w-full mt-2 py-3 px-4 text-sm font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-50 transition-colors cursor-pointer"
                 >
-                  {verifying ? 'Memverifikasi Akses Ujian...' : 'Masuk ke Soal'}
+                  {verifying ? 'Memvalidasi Data Ujian...' : 'Masuk ke Soal'}
                 </button>
               </form>
             </div>
@@ -696,6 +797,9 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
               onClick={() => {
                 setSessionToken(null);
                 setExamData(null);
+                setFlaggedIds({});
+                setLastSavedText(null);
+                setShowSubmitConfirm(false);
                 if (isDirectStudentMode) {
                   setNis('');
                   setPinSemester('');
@@ -767,28 +871,51 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   // ==========================
   const currentQuestion = examData.questions[currentIdx];
   const answeredCount = Object.keys(answers).length;
+  const flaggedCount = examData.questions.filter((q) => Boolean(flaggedIds[q.id])).length;
+  const unansweredCount = Math.max(0, examData.questions.length - answeredCount);
+  const firstPendingIdx = examData.questions.findIndex(
+    (q) => !answers[String(q.id)] || Boolean(flaggedIds[q.id])
+  );
+  const isTimerCritical = remainingSeconds <= 60;
+  const isTimerWarning = remainingSeconds > 60 && remainingSeconds <= 300;
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Exam Top Bar */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+      <header className="bg-white border-b border-slate-200 px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <ShieldCheck className="w-4 h-4 text-blue-700 shrink-0" />
             <span className="font-semibold text-slate-900 truncate">{examData.package.title}</span>
-            <span aria-hidden="true">·</span>
-            <span className="whitespace-nowrap">{examData.student.name} ({examData.student.nis})</span>
+            <span aria-hidden="true" className="hidden sm:inline">·</span>
+            <span className="whitespace-nowrap hidden sm:inline">{examData.student.name} ({examData.student.nis})</span>
+          </div>
+          <div className="text-[11px] text-slate-500 sm:hidden mt-0.5 truncate">
+            {examData.student.name} ({examData.student.nis})
           </div>
         </div>
 
-        <div className="flex items-center gap-4 shrink-0">
-          <div className="text-xs text-slate-500 flex items-center gap-1.5">
-            <Save className="w-3.5 h-3.5 text-emerald-600" />
-            <span>{savingAnswer ? 'Menyimpan...' : lastSavedText || 'Auto-save aktif'}</span>
+        <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+          <div className="text-xs text-slate-500 hidden md:flex items-center gap-1.5 min-w-[130px] justify-end">
+            <Save className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            <span className="tabular-nums">{savingAnswer ? 'Menyimpan...' : lastSavedText || 'Auto-save aktif'}</span>
           </div>
 
-          <div className="px-3 py-1.5 bg-slate-100 rounded-lg font-mono text-sm font-bold text-slate-900 flex items-center gap-2 tabular-nums">
-            <Clock className="w-4 h-4 text-blue-700" />
+          <div
+            className={`px-3 py-1.5 rounded-lg font-mono text-sm font-bold flex items-center gap-2 tabular-nums border ${
+              isTimerCritical
+                ? 'bg-red-50 border-red-300 text-red-700'
+                : isTimerWarning
+                  ? 'bg-amber-50 border-amber-300 text-amber-800'
+                  : 'bg-slate-100 border-transparent text-slate-900'
+            }`}
+            title="Sisa waktu pengerjaan ujian"
+          >
+            <Clock
+              className={`w-4 h-4 ${
+                isTimerCritical ? 'text-red-700' : isTimerWarning ? 'text-amber-700' : 'text-blue-700'
+              }`}
+            />
             {formatTimer(remainingSeconds)}
           </div>
 
@@ -905,7 +1032,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                 })}
               </div>
 
-              <div className="mt-8 pt-5 border-t border-slate-100 flex items-center justify-between">
+              <div className="mt-8 pt-5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
                 <button
                   type="button"
                   disabled={currentIdx === 0}
@@ -914,6 +1041,20 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                 >
                   Sebelumnya
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => toggleFlagQuestion(currentQuestion.id)}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    flaggedIds[currentQuestion.id]
+                      ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                      : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <Flag className="w-3.5 h-3.5" aria-hidden="true" />
+                  {flaggedIds[currentQuestion.id] ? 'Ditandai Ragu-ragu' : 'Tandai Ragu-ragu'}
+                </button>
+
                 <button
                   type="button"
                   disabled={currentIdx >= examData.questions.length - 1}
@@ -922,6 +1063,9 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                 >
                   Soal Berikutnya
                 </button>
+              </div>
+              <div className="mt-3 text-[11px] text-slate-400 hidden sm:block text-center">
+                Tips: Gunakan tombol panah kiri/kanan (&larr; / &rarr;) pada keyboard untuk berpindah soal
               </div>
             </>
           ) : (
@@ -934,31 +1078,65 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
           <div>
             <h3 className="font-display text-sm font-bold text-slate-900">Navigasi Nomor Soal</h3>
             <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
-              Terjawab {answeredCount} dari {examData.questions.length} soal (Urutan acak terkunci di server)
+              Terjawab {answeredCount} dari {examData.questions.length} soal
+              {flaggedCount > 0 ? ` · ${flaggedCount} ragu-ragu` : ''}
             </p>
           </div>
 
           <div className="grid grid-cols-5 gap-2">
             {examData.questions.map((q, idx) => {
               const isAnswered = Boolean(answers[String(q.id)]);
+              const isFlagged = Boolean(flaggedIds[q.id]);
               const isCurrent = idx === currentIdx;
               return (
                 <button
                   key={q.id}
                   type="button"
                   onClick={() => setCurrentIdx(idx)}
-                  className={`h-10 rounded-lg font-mono text-xs font-bold border transition-colors tabular-nums cursor-pointer ${
+                  className={`relative h-10 rounded-lg font-mono text-xs font-bold border transition-colors tabular-nums cursor-pointer ${
                     isCurrent
                       ? 'bg-blue-700 text-white border-blue-700'
-                      : isAnswered
-                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      : isFlagged
+                        ? 'bg-amber-50 text-amber-900 border-amber-400'
+                        : isAnswered
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                   }`}
+                  title={
+                    isFlagged
+                      ? 'Ditandai ragu-ragu'
+                      : isAnswered
+                        ? 'Sudah dijawab'
+                        : 'Belum dijawab'
+                  }
                 >
                   {q.displayNumber}
+                  {isFlagged && (
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full absolute top-1 right-1 ${
+                        isCurrent ? 'bg-amber-300' : 'bg-amber-500'
+                      }`}
+                      aria-hidden="true"
+                    />
+                  )}
                 </button>
               );
             })}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-blue-700 inline-block" /> Aktif
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-emerald-200 border border-emerald-400 inline-block" /> Terjawab
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-amber-100 border border-amber-400 inline-block" /> Ragu
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-xs bg-white border border-slate-300 inline-block" /> Kosong
+            </span>
           </div>
 
           <div className="pt-4 border-t border-slate-100">
@@ -973,9 +1151,31 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
               </button>
             ) : (
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                <p className="text-xs font-medium text-slate-800">
-                  Yakin mengumpulkan ujian sekarang? ({answeredCount}/{examData.questions.length} soal terjawab)
+                <p className="text-xs font-semibold text-slate-900">
+                  Yakin mengumpulkan ujian sekarang? ({answeredCount}/{examData.questions.length} terjawab)
                 </p>
+                {(unansweredCount > 0 || flaggedCount > 0) && (
+                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 space-y-1.5">
+                    <div>
+                      Perhatian:{' '}
+                      {unansweredCount > 0 ? `${unansweredCount} soal belum dijawab` : ''}
+                      {unansweredCount > 0 && flaggedCount > 0 ? ' dan ' : ''}
+                      {flaggedCount > 0 ? `${flaggedCount} soal masih ditandai ragu-ragu` : ''}.
+                    </div>
+                    {firstPendingIdx >= 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCurrentIdx(firstPendingIdx);
+                          setShowSubmitConfirm(false);
+                        }}
+                        className="font-semibold text-blue-700 hover:underline cursor-pointer"
+                      >
+                        Periksa soal pertama yang belum selesai &rarr;
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"

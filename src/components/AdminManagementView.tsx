@@ -19,6 +19,8 @@ import {
   Users,
   Link2,
   GraduationCap,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type {
@@ -74,6 +76,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   const [formEmail, setFormEmail] = useState('');
   const [formRole, setFormRole] = useState<'TEACHER' | 'ADMIN'>('TEACHER');
   const [formPassword, setFormPassword] = useState('');
+  const [showFormPassword, setShowFormPassword] = useState(false);
   const [teacherModalError, setTeacherModalError] = useState<string | null>(null);
   const [savingTeacher, setSavingTeacher] = useState(false);
 
@@ -203,6 +206,31 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     }
   }, [classes]);
 
+  useEffect(() => {
+    const anyModalOpen =
+      showTeacherModal ||
+      Boolean(resetTarget) ||
+      Boolean(revealedCredential) ||
+      Boolean(assignTarget) ||
+      showImportModal ||
+      showSubjectModal ||
+      showClassModal;
+    if (!anyModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowTeacherModal(false);
+        setResetTarget(null);
+        setRevealedCredential(null);
+        setAssignTarget(null);
+        setShowImportModal(false);
+        setShowSubjectModal(false);
+        setShowClassModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showTeacherModal, resetTarget, revealedCredential, assignTarget, showImportModal, showSubjectModal, showClassModal]);
+
   // --- Teacher CRUD Handlers ---
   function openCreateTeacherModal() {
     setEditingTeacher(null);
@@ -210,6 +238,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     setFormEmail('');
     setFormRole('TEACHER');
     setFormPassword('');
+    setShowFormPassword(false);
     setTeacherModalError(null);
     setShowTeacherModal(true);
   }
@@ -220,6 +249,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     setFormEmail(t.email);
     setFormRole(t.role);
     setFormPassword('');
+    setShowFormPassword(false);
     setTeacherModalError(null);
     setShowTeacherModal(true);
   }
@@ -709,8 +739,18 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Cari nama atau email guru..."
-                  className="w-full pl-9 pr-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  className="w-full pl-9 pr-7 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2.5 top-1/2 -translate-y-1/2 cursor-pointer"
+                    aria-label="Hapus pencarian guru"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               <select
                 aria-label="Filter Peran"
@@ -1193,7 +1233,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Tambah / Edit Guru */}
       {showTeacherModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowTeacherModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-base font-bold text-slate-900">
@@ -1255,15 +1300,25 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   {editingTeacher ? 'Kata Sandi Baru (Opsional — kosongkan jika tidak diubah)' : 'Kata Sandi Awal'}
                 </label>
-                <input
-                  type="password"
-                  required={!editingTeacher}
-                  minLength={6}
-                  value={formPassword}
-                  onChange={(e) => setFormPassword(e.target.value)}
-                  placeholder={editingTeacher ? 'Kosongkan jika tetap' : 'Minimal 6 karakter'}
-                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
+                <div className="relative">
+                  <input
+                    type={showFormPassword ? 'text' : 'password'}
+                    required={!editingTeacher}
+                    minLength={6}
+                    value={formPassword}
+                    onChange={(e) => setFormPassword(e.target.value)}
+                    placeholder={editingTeacher ? 'Kosongkan jika tetap' : 'Minimal 6 karakter'}
+                    className="w-full pl-3.5 pr-10 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowFormPassword((p) => !p)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded cursor-pointer"
+                    aria-label={showFormPassword ? 'Sembunyikan kata sandi' : 'Lihat kata sandi'}
+                  >
+                    {showFormPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
@@ -1289,7 +1344,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Reset Kata Sandi Guru */}
       {resetTarget && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setResetTarget(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display text-base font-bold text-slate-900">Reset Kata Sandi Guru</h3>
@@ -1351,7 +1411,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Kredensial Guru Baru / Hasil Reset */}
       {revealedCredential && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRevealedCredential(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-sm p-6 shadow-xl">
             <h3 className="font-display text-base font-bold text-slate-900">{revealedCredential.title}</h3>
             <p className="text-xs text-slate-500 mt-1">
@@ -1404,7 +1469,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Penugasan Mapel & Kelas */}
       {assignTarget && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAssignTarget(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-3">
               <div>
@@ -1480,7 +1550,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Import CSV Guru */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowImportModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-xl">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
               <div className="flex items-center gap-2.5">
@@ -1727,7 +1802,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Tambah / Edit Mata Pelajaran */}
       {showSubjectModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSubjectModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-base font-bold text-slate-900">
@@ -1810,7 +1890,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
       {/* Modal Tambah / Edit Kelas */}
       {showClassModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowClassModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-base font-bold text-slate-900">

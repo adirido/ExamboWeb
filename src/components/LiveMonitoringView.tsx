@@ -53,6 +53,8 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   const activePkgId = selectedPackageId || packages[0]?.id || null;
   const [data, setData] = useState<MonitoringPayload | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [busySessionId, setBusySessionId] = useState<number | null>(null);
   const [confirmRotateToken, setConfirmRotateToken] = useState(false);
@@ -69,12 +71,20 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
     try {
       const payload = await teacherApi.getMonitoring(token, pkgId);
       setData(payload);
+      setLastSyncedAt(Date.now());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal memuat status monitoring.');
     } finally {
       if (!silent) setLoading(false);
     }
+  }
+
+  async function handleManualRefresh() {
+    if (!activePkgId || refreshing) return;
+    setRefreshing(true);
+    await fetchMonitoring(activePkgId, true);
+    setRefreshing(false);
   }
 
   // Initial load + 5s polling resilience + 1s local countdown tick for active students
@@ -126,6 +136,18 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
       (connected) => setWsConnected(connected)
     );
   }, [activePkgId]);
+
+  useEffect(() => {
+    if (!pendingAction && !confirmRotateToken) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPendingAction(null);
+        setConfirmRotateToken(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pendingAction, confirmRotateToken]);
 
   async function handleUnlock(student: MonitoringStudentRow) {
     if (!student.sessionId || !activePkgId) return;
@@ -237,12 +259,12 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 shrink-0">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0">
           <select
             aria-label="Pilih Paket Ujian Dipantau"
             value={activePkgId || ''}
             onChange={(e) => onSelectPackage(Number(e.target.value))}
-            className="w-full sm:w-64 px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-800 truncate shrink-0"
+            className="w-full sm:w-60 px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-800 truncate shrink-0"
           >
             {packages.map((p) => (
               <option key={p.id} value={p.id}>
@@ -250,6 +272,19 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
               </option>
             ))}
           </select>
+
+          <button
+            type="button"
+            disabled={!activePkgId || refreshing}
+            onClick={handleManualRefresh}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+            title={lastSyncedAt ? `Terakhir diperbarui pukul ${formatTime(lastSyncedAt)}` : 'Segarkan data monitoring'}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-blue-700' : 'text-slate-600'}`} />
+            <span className="hidden sm:inline font-mono tabular-nums">
+              {lastSyncedAt ? formatTime(lastSyncedAt) : 'Segarkan'}
+            </span>
+          </button>
 
           {data && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg text-xs">
@@ -408,8 +443,18 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Cari nama / NIS..."
-                  className="pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 w-44"
+                  className="pl-8 pr-7 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 w-44"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                    aria-label="Hapus pencarian"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
               </div>
               <select
                 aria-label="Filter Status Peserta"
@@ -423,6 +468,18 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
                 <option value="NOT_STARTED">Belum Mulai</option>
                 <option value="SUBMITTED">Selesai</option>
               </select>
+              {(statusFilter !== 'ALL' || searchQuery.trim()) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('ALL');
+                    setSearchQuery('');
+                  }}
+                  className="px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  Reset Filter
+                </button>
+              )}
             </div>
           </div>
 

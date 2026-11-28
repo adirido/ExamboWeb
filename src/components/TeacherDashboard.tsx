@@ -12,6 +12,8 @@ import {
   KeyRound,
   X,
   UserCog,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type {
@@ -45,8 +47,30 @@ const TAB_LABELS: Record<DashboardTab, string> = {
   students: 'Siswa & PIN Semester',
   recap: 'Rekap Nilai & CSV',
   exambro: 'Penugasan & API Exambro',
-  admin: 'Manajemen Guru & Mapel',
+  admin: 'Master Data Sekolah',
 };
+
+const DASHBOARD_STATE_KEY = 'examflow_dashboard_state';
+
+function readStoredDashboardState(role: 'ADMIN' | 'TEACHER'): {
+  tab: DashboardTab;
+  packageId: number | null;
+} {
+  try {
+    const raw = window.sessionStorage.getItem(DASHBOARD_STATE_KEY);
+    if (!raw) return { tab: 'packages', packageId: null };
+    const parsed = JSON.parse(raw) as { tab?: DashboardTab; packageId?: number | null };
+    const allowedTabs: DashboardTab[] =
+      role === 'ADMIN'
+        ? ['packages', 'monitoring', 'questions', 'students', 'recap', 'admin', 'exambro']
+        : ['packages', 'monitoring', 'questions', 'students', 'recap'];
+    const tab = parsed?.tab && allowedTabs.includes(parsed.tab) ? parsed.tab : 'packages';
+    const packageId = typeof parsed?.packageId === 'number' ? parsed.packageId : null;
+    return { tab, packageId };
+  } catch {
+    return { tab: 'packages', packageId: null };
+  }
+}
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   token,
@@ -54,25 +78,52 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onLogout,
   onOpenStudentPortal,
 }) => {
-  const [activeTab, setActiveTab] = useState<DashboardTab>('packages');
+  const [initialUi] = useState(() => readStoredDashboardState(teacher.role));
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() => initialUi.tab);
   const [packages, setPackages] = useState<ExamPackage[]>([]);
   const [assignments, setAssignments] = useState<TeacherAssignment[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [classes, setClasses] = useState<ClassItem[]>([]);
-  const [selectedPackageId, setSelectedPackageId] = useState<number | null>(null);
+  const [selectedPackageId, setSelectedPackageId] = useState<number | null>(() => initialUi.packageId);
   const [loading, setLoading] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCurrentPw, setShowCurrentPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        DASHBOARD_STATE_KEY,
+        JSON.stringify({ tab: activeTab, packageId: selectedPackageId })
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }, [activeTab, selectedPackageId]);
+
+  useEffect(() => {
+    if (!showPasswordModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowPasswordModal(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showPasswordModal]);
 
   function openPasswordModal() {
     setCurrentPassword('');
     setNewPassword('');
     setConfirmPassword('');
+    setShowCurrentPw(false);
+    setShowNewPw(false);
+    setShowConfirmPw(false);
     setPasswordError(null);
     setPasswordSuccess(null);
     setShowPasswordModal(true);
@@ -145,7 +196,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     { id: 'recap', label: 'Rekap Nilai', icon: <FileSpreadsheet className="w-4 h-4" /> },
     ...(teacher.role === 'ADMIN'
       ? [
-          { id: 'admin' as const, label: 'Guru & Mapel', icon: <UserCog className="w-4 h-4" /> },
+          { id: 'admin' as const, label: 'Master Data', icon: <UserCog className="w-4 h-4" /> },
           { id: 'exambro' as const, label: 'API Exambro', icon: <Smartphone className="w-4 h-4" /> },
         ]
       : []),
@@ -237,11 +288,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <span className="font-display font-bold text-slate-900 truncate whitespace-nowrap">{TAB_LABELS[activeTab]}</span>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={openPasswordModal}
-              className="lg:hidden inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="lg:hidden inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               title="Ubah Kata Sandi"
             >
               <KeyRound className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -249,11 +300,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </button>
             <button
               type="button"
+              onClick={onLogout}
+              className="lg:hidden inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              title="Keluar Akun"
+            >
+              <LogOut className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span className="hidden sm:inline">Keluar</span>
+            </button>
+            <button
+              type="button"
               onClick={onOpenStudentPortal}
-              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              Portal Ujian Siswa (Exambro)
+              <span className="hidden sm:inline">Portal Ujian Siswa (Exambro)</span>
+              <span className="sm:hidden">Portal Siswa</span>
             </button>
           </div>
         </header>
@@ -378,7 +439,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
       {/* Modal Ubah Kata Sandi */}
       {showPasswordModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowPasswordModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between gap-4 mb-4">
               <div>
@@ -410,40 +476,70 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <form onSubmit={handleChangePassword} className="space-y-3.5">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Kata Sandi Saat Ini</label>
-                <input
-                  type="password"
-                  required
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  placeholder="Masukkan kata sandi saat ini"
-                />
+                <div className="relative">
+                  <input
+                    type={showCurrentPw ? 'text' : 'password'}
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Masukkan kata sandi saat ini"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPw((p) => !p)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded cursor-pointer"
+                    aria-label={showCurrentPw ? 'Sembunyikan kata sandi' : 'Lihat kata sandi'}
+                  >
+                    {showCurrentPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Kata Sandi Baru</label>
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  placeholder="Minimal 6 karakter"
-                />
+                <div className="relative">
+                  <input
+                    type={showNewPw ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Minimal 6 karakter"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPw((p) => !p)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded cursor-pointer"
+                    aria-label={showNewPw ? 'Sembunyikan kata sandi' : 'Lihat kata sandi'}
+                  >
+                    {showNewPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Konfirmasi Kata Sandi Baru</label>
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  placeholder="Ulangi kata sandi baru"
-                />
+                <div className="relative">
+                  <input
+                    type={showConfirmPw ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    placeholder="Ulangi kata sandi baru"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPw((p) => !p)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 rounded cursor-pointer"
+                    aria-label={showConfirmPw ? 'Sembunyikan kata sandi' : 'Lihat kata sandi'}
+                  >
+                    {showConfirmPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <div className="pt-2 flex items-center justify-end gap-2">

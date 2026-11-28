@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   QrCode,
   RefreshCw,
@@ -13,6 +13,7 @@ import {
   ShieldAlert,
   BookOpen,
   Pencil,
+  Search,
 } from 'lucide-react';
 import { teacherApi } from '../api';
 import type { ClassItem, ExamPackage, QrPayloadResponse, SubjectItem, TeacherAssignment } from '../types';
@@ -42,12 +43,14 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
 }) => {
   const [filterClass, setFilterClass] = useState<string>('ALL');
   const [filterSubject, setFilterSubject] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [qrModalData, setQrModalData] = useState<QrPayloadResponse | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [confirmRotateId, setConfirmRotateId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Create form state
@@ -74,9 +77,31 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   const [editIsActive, setEditIsActive] = useState(true);
   const [savingEdit, setSavingEdit] = useState(false);
 
+  useEffect(() => {
+    if (!showCreateModal && !editingPackage && !qrModalData) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreateModal(false);
+        setEditingPackage(null);
+        setQrModalData(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showCreateModal, editingPackage, qrModalData]);
+
   const filtered = packages.filter((p) => {
     if (filterClass !== 'ALL' && String(p.class_id) !== filterClass) return false;
     if (filterSubject !== 'ALL' && String(p.subject_id) !== filterSubject) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      return (
+        p.title.toLowerCase().includes(q) ||
+        p.current_token.toLowerCase().includes(q) ||
+        p.subject_name.toLowerCase().includes(q) ||
+        p.class_name.toLowerCase().includes(q)
+      );
+    }
     return true;
   });
 
@@ -98,6 +123,7 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
     setFeedback(null);
     try {
       const res = await teacherApi.rotateToken(token, pkg.id);
+      setConfirmRotateId(null);
       await onRefresh();
       setFeedback({
         type: 'ok',
@@ -221,7 +247,28 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
             Aktifkan sesi per kelas, tampilkan QR Code terenkripsi untuk APK Exambro, dan rotasi token saat berpindah kelas.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="relative w-full sm:w-44">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Cari paket / token..."
+              className="w-full pl-8 pr-7 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                aria-label="Hapus pencarian paket"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
           <select
             aria-label="Filter Mata Pelajaran"
             value={filterSubject}
@@ -359,15 +406,36 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => handleRotateToken(pkg)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isBusy ? 'animate-spin' : ''}`} aria-hidden="true" />
-                      Acak / Rotate Token
-                    </button>
+                    {confirmRotateId === pkg.id ? (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 rounded-lg">
+                        <span className="text-[11px] font-semibold text-slate-700">Rotasi token?</span>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => handleRotateToken(pkg)}
+                          className="px-2 py-0.5 text-[11px] font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded cursor-pointer"
+                        >
+                          {isBusy ? '...' : 'Ya'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRotateId(null)}
+                          className="px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                        >
+                          Batal
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => setConfirmRotateId(pkg.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isBusy ? 'animate-spin' : ''}`} aria-hidden="true" />
+                        Acak / Rotate Token
+                      </button>
+                    )}
 
                     <button
                       type="button"
@@ -472,7 +540,12 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
 
       {/* Create Package Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowCreateModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-lg font-bold text-slate-900">Buat Paket Ujian Baru</h3>
@@ -621,7 +694,12 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
 
       {/* Edit Package Modal */}
       {editingPackage && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingPackage(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-lg font-bold text-slate-900">Edit Paket Ujian</h3>
@@ -755,7 +833,12 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
 
       {/* Direct Student Exam QR Modal */}
       {qrModalData && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setQrModalData(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div>

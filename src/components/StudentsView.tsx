@@ -149,6 +149,29 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     loadStudents();
   }, [selectedClassId]);
 
+  useEffect(() => {
+    const anyModalOpen =
+      showImportModal ||
+      showAddModal ||
+      Boolean(pinTargetStudent) ||
+      Boolean(revealedPin) ||
+      Boolean(editTargetStudent) ||
+      showPrintModal;
+    if (!anyModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowImportModal(false);
+        setShowAddModal(false);
+        setPinTargetStudent(null);
+        setRevealedPin(null);
+        setEditTargetStudent(null);
+        setShowPrintModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showImportModal, showAddModal, pinTargetStudent, revealedPin, editTargetStudent, showPrintModal]);
+
   async function loadStudents() {
     setLoading(true);
     setError(null);
@@ -461,8 +484,18 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Cari NIS atau nama..."
-              className="w-full pl-8 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+              className="w-full pl-8 pr-7 py-2 text-xs bg-white border border-slate-300 rounded-lg"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                aria-label="Hapus pencarian siswa"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
 
           <select
@@ -676,7 +709,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Import Data Siswa Modal */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowImportModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl h-[84vh] max-h-[720px] min-h-[520px] flex flex-col overflow-hidden">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
@@ -1029,7 +1067,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Add Student Modal (Teacher: NIS, Nama, Kelas only; Admin: + optional PIN) */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowAddModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-lg font-bold text-slate-900">Tambah Siswa Baru</h3>
@@ -1119,7 +1162,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Admin-Only Edit / Reset Semester PIN Modal */}
       {isAdmin && pinTargetStudent && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPinTargetStudent(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-display text-base font-bold text-slate-900">Ubah / Reset PIN Semester</h3>
@@ -1216,7 +1264,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Revealed PIN Confirmation Modal */}
       {revealedPin && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRevealedPin(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-sm p-6">
             <h3 className="font-display text-base font-bold text-slate-900">{revealedPin.title}</h3>
             <p className="text-xs text-slate-500 mt-1">
@@ -1258,7 +1311,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Edit Student Modal */}
       {editTargetStudent && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditTargetStudent(null);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-base font-bold text-slate-900">Edit Data Siswa</h3>
@@ -1336,7 +1394,12 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
       {/* Printable Exam Participant Cards Modal */}
       {showPrintModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowPrintModal(false);
+          }}
+        >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-4xl h-[88vh] flex flex-col overflow-hidden shadow-xl">
             <div className="px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
               <div>
