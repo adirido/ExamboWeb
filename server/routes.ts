@@ -2270,13 +2270,26 @@ export function createApiRouter(): express.Router {
   });
 
   router.delete('/students/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
-    if (!requireAdminRole(req, res)) return;
     const studentId = Number(req.params.id);
-    const info = db.prepare('DELETE FROM students WHERE id = ?').run(studentId);
-    if (info.changes === 0) {
+    const existing = db.prepare('SELECT id, class_id FROM students WHERE id = ?').get(studentId) as
+      | { id: number; class_id: number }
+      | undefined;
+    if (!existing) {
       res.status(404).json({ error: 'Siswa tidak ditemukan.' });
       return;
     }
+
+    if (req.teacher!.role !== 'ADMIN') {
+      const scope = getTeacherAssignmentScope(req.teacher!.teacherId);
+      if (!scope.classIds.includes(existing.class_id)) {
+        res.status(403).json({
+          error: 'Akses ditolak. Anda hanya dapat menghapus data siswa pada kelas penugasan Anda.',
+        });
+        return;
+      }
+    }
+
+    db.prepare('DELETE FROM students WHERE id = ?').run(studentId);
     res.json({ success: true });
   });
 

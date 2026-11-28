@@ -17,6 +17,7 @@ import {
 import { teacherApi } from '../api';
 import { isSupabaseMode } from '../lib/supabase';
 import { subscribeTeacherMonitoring } from '../realtimeClient';
+import { useToast } from './ToastProvider';
 import type { ExamPackage, MonitoringPayload, MonitoringStudentRow, SessionStatus } from '../types';
 
 interface LiveMonitoringViewProps {
@@ -62,10 +63,10 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   const [confirmRotateToken, setConfirmRotateToken] = useState(false);
   const [rotatingToken, setRotatingToken] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingSessionAction | null>(null);
+  const toast = useToast();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | SessionStatus>('ALL');
   const [liveAlert, setLiveAlert] = useState<string | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function fetchMonitoring(pkgId: number, silent = false) {
@@ -154,14 +155,13 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   async function handleUnlock(student: MonitoringStudentRow) {
     if (!student.sessionId || !activePkgId || busySessionId !== null) return;
     setBusySessionId(student.sessionId);
-    setError(null);
     try {
       await teacherApi.unlockSession(token, student.sessionId);
       setLiveAlert(null);
-      setActionFeedback(`Sesi ujian ${student.name} berhasil dibuka kembali (+2 batas pelanggaran).`);
+      toast.success(`Sesi ujian ${student.name} berhasil dibuka kembali (+2 batas pelanggaran).`);
       await fetchMonitoring(activePkgId, true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal membuka kunci sesi siswa.');
+      toast.error(err instanceof Error ? err.message : 'Gagal membuka kunci sesi siswa.');
     } finally {
       setBusySessionId(null);
     }
@@ -171,30 +171,29 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
     if (!pendingAction || !activePkgId || busySessionId !== null) return;
     const { sessionId, type, studentName } = pendingAction;
     setBusySessionId(sessionId);
-    setError(null);
     try {
       if (type === 'reset-device') {
         await teacherApi.resetSessionDevice(token, sessionId);
-        setActionFeedback(
+        toast.success(
           `Perangkat untuk ${studentName} telah diputus. Siswa kini dapat login ulang di HP baru dengan progres jawaban tetap tersimpan.`
         );
       } else if (type === 'force-submit') {
         const res = await teacherApi.forceSubmitSession(token, sessionId);
-        setActionFeedback(
+        toast.success(
           res.score === null || isProctorOnly
             ? `Ujian ${studentName} berhasil diselesaikan paksa oleh pengawas.`
             : `Ujian ${studentName} berhasil diselesaikan paksa oleh pengawas (Nilai akhir: ${res.score}, Benar: ${res.correctCount}/${res.totalQuestions}).`
         );
       } else if (type === 'extend-time') {
         const res = await teacherApi.extendSessionTime(token, sessionId, 10);
-        setActionFeedback(
+        toast.success(
           `Waktu ujian ${studentName} berhasil ditambah +${res.extraMinutes} menit.`
         );
       }
       setPendingAction(null);
       await fetchMonitoring(activePkgId, true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menjalankan aksi pengawas.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menjalankan aksi pengawas.');
     } finally {
       setBusySessionId(null);
     }
@@ -206,10 +205,10 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
     try {
       const res = await teacherApi.rotateToken(token, activePkgId);
       setConfirmRotateToken(false);
-      setActionFeedback(`Token masuk ujian berhasil dirotasi menjadi ${res.currentToken}.`);
+      toast.success(`Token masuk ujian berhasil dirotasi menjadi ${res.currentToken}.`);
       await fetchMonitoring(activePkgId, true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal merotasi token.');
+      toast.error(err instanceof Error ? err.message : 'Gagal merotasi token.');
     } finally {
       setRotatingToken(false);
     }
@@ -372,15 +371,6 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
               ))}
             </div>
           )}
-        </div>
-      )}
-
-      {actionFeedback && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-medium text-emerald-800 flex items-center justify-between gap-4">
-          <span>{actionFeedback}</span>
-          <button type="button" onClick={() => setActionFeedback(null)} className="text-emerald-700 hover:text-emerald-950 cursor-pointer">
-            <X className="w-4 h-4" />
-          </button>
         </div>
       )}
 

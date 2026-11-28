@@ -17,6 +17,7 @@ import {
   Search,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type {
   ClassItem,
   ExamPackage,
@@ -78,6 +79,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   onSelectPackage,
   onPackagesChanged,
 }) => {
+  const toast = useToast();
   const isAdmin = teacherRole === 'ADMIN';
   const canCreatePackage = isAdmin || assignments.length > 0;
   const editablePackages = packages.filter((p) => p.access_role !== 'PROCTOR');
@@ -104,7 +106,6 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   // New Package Modal state
@@ -229,14 +230,16 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       }
       setShowEditor(false);
       if (syncedCount > 0) {
-        setBannerMsg(
+        toast.success(
           `Soal tersimpan dan otomatis disinkronkan ke ${syncedCount} kelas paralel pada jadwal yang sama.`
         );
+      } else {
+        toast.success(editingId ? 'Soal berhasil diperbarui.' : 'Soal baru berhasil ditambahkan.');
       }
       await loadQuestions(activePkgId);
       await onPackagesChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menyimpan soal.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menyimpan soal.');
     } finally {
       setSaving(false);
     }
@@ -248,10 +251,11 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
     try {
       await teacherApi.deleteQuestion(token, qId);
       setConfirmDeleteId(null);
+      toast.success('Soal berhasil dihapus.');
       await loadQuestions(activePkgId);
       await onPackagesChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menghapus soal.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus soal.');
     } finally {
       setDeletingId(null);
     }
@@ -259,7 +263,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   function openNewPackageModal() {
     if (!canCreatePackage) {
-      setError('Akun Anda belum memiliki penugasan mata pelajaran & kelas dari Admin Sekolah.');
+      toast.error('Akun Anda belum memiliki penugasan mata pelajaran & kelas dari Admin Sekolah.');
       return;
     }
     const initSubject = assignments[0]?.subject_id || subjects[0]?.id || 1;
@@ -304,8 +308,8 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       await onPackagesChanged();
       onSelectPackage(res.package.id);
       setShowNewPkgModal(false);
-      setBannerMsg(
-        `Paket "${res.package.title}" (Token: ${res.package.current_token}) berhasil dibuat dan dipilih. Silakan tambah atau impor soal.`
+      toast.success(
+        `Paket "${res.package.title}" (Token: ${res.package.current_token}) berhasil dibuat dan dipilih.`
       );
     } catch (err) {
       setPkgError(err instanceof Error ? err.message : 'Gagal membuat paket ujian baru.');
@@ -377,9 +381,11 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       setImportResult(res);
       setImportModalTab('result');
       if (res.summary.syncedPackageCount && res.summary.syncedPackageCount > 0) {
-        setBannerMsg(
+        toast.success(
           `${res.summary.createdCount} soal diimpor dan disinkronkan ke ${res.summary.syncedPackageCount} kelas paralel.`
         );
+      } else if (res.summary.createdCount > 0) {
+        toast.success(`${res.summary.createdCount} soal berhasil diimpor ke Bank Soal.`);
       }
       await loadQuestions(activePkgId);
       await onPackagesChanged();
@@ -464,18 +470,6 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
           </button>
         </div>
       </div>
-
-      {bannerMsg && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-medium text-emerald-900 flex items-center justify-between gap-4">
-          <span className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-            {bannerMsg}
-          </span>
-          <button type="button" onClick={() => setBannerMsg(null)} className="text-emerald-700 hover:text-emerald-950 cursor-pointer">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       <div className="min-h-[24px] flex flex-wrap items-center justify-between gap-3 px-1 text-xs text-slate-600 overflow-x-hidden">
         {activePkg ? (

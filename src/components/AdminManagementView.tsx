@@ -22,6 +22,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type {
   ClassItem,
   ImportTeachersResult,
@@ -57,6 +58,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   classes,
   onContextChanged,
 }) => {
+  const toast = useToast();
   const [subTab, setSubTab] = useState<'teachers' | 'subjects' | 'classes'>('teachers');
 
   // Teachers state
@@ -64,7 +66,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   const [loadingTeachers, setLoadingTeachers] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'ADMIN' | 'TEACHER'>('ALL');
-  const [teacherFeedback, setTeacherFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmDeleteTeacherId, setConfirmDeleteTeacherId] = useState<number | null>(null);
   const [busyTeacherId, setBusyTeacherId] = useState<number | null>(null);
   const [confirmRemoveAssignId, setConfirmRemoveAssignId] = useState<number | null>(null);
@@ -112,7 +113,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   // Subjects state
   const [subjects, setSubjects] = useState<SubjectItem[]>(contextSubjects);
   const [loadingSubjects, setLoadingSubjects] = useState(true);
-  const [subjectFeedback, setSubjectFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmDeleteSubjectId, setConfirmDeleteSubjectId] = useState<number | null>(null);
   const [busySubjectId, setBusySubjectId] = useState<number | null>(null);
 
@@ -127,7 +127,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   // Classes state
   const [classesList, setClassesList] = useState<ClassItem[]>(classes);
   const [loadingClasses, setLoadingClasses] = useState(true);
-  const [classFeedback, setClassFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmDeleteClassId, setConfirmDeleteClassId] = useState<number | null>(null);
   const [busyClassId, setBusyClassId] = useState<number | null>(null);
 
@@ -145,10 +144,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       const res = await teacherApi.getAdminTeachers(token);
       setTeachers(res.teachers);
     } catch (err) {
-      setTeacherFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal memuat daftar akun guru.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal memuat daftar akun guru.');
     } finally {
       setLoadingTeachers(false);
     }
@@ -160,10 +156,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       const res = await teacherApi.getSubjects(token);
       setSubjects(res.subjects);
     } catch (err) {
-      setSubjectFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal memuat daftar mata pelajaran.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal memuat daftar mata pelajaran.');
     } finally {
       setLoadingSubjects(false);
     }
@@ -175,10 +168,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       const res = await teacherApi.getClasses(token);
       setClassesList(res.classes);
     } catch (err) {
-      setClassFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal memuat daftar kelas sekolah.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal memuat daftar kelas sekolah.');
     } finally {
       setLoadingClasses(false);
     }
@@ -307,7 +297,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           ...(formPassword.trim() ? { newPassword: formPassword } : {}),
         });
         setShowTeacherModal(false);
-        setTeacherFeedback({ type: 'ok', text: `Data akun "${formName.trim()}" berhasil diperbarui.` });
+        toast.success(`Data akun "${formName.trim()}" berhasil diperbarui.`);
         await loadTeachers();
         await onContextChanged();
       } else {
@@ -323,6 +313,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           role: formRole,
         });
         setShowTeacherModal(false);
+        toast.success(`Akun guru "${formName.trim()}" berhasil dibuat.`);
         setRevealedCredential({
           name: formName.trim(),
           nip: normalizedNip,
@@ -341,17 +332,13 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   async function handleDeleteTeacher(id: number) {
     if (busyTeacherId !== null) return;
     setBusyTeacherId(id);
-    setTeacherFeedback(null);
     try {
       await teacherApi.deleteAdminTeacher(token, id);
       setConfirmDeleteTeacherId(null);
-      setTeacherFeedback({ type: 'ok', text: 'Akun guru berhasil dihapus.' });
+      toast.success('Akun guru berhasil dihapus.');
       await loadTeachers();
     } catch (err) {
-      setTeacherFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal menghapus akun guru.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus akun guru.');
     } finally {
       setBusyTeacherId(null);
     }
@@ -373,10 +360,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     try {
       await teacherApi.addTeacherAssignmentFor(token, assignTarget.id, assignSubjectId, assignClassId);
       setAssignTarget(null);
-      setTeacherFeedback({
-        type: 'ok',
-        text: `Penugasan mapel/kelas ditambahkan untuk ${assignTarget.name}.`,
-      });
+      toast.success(`Penugasan mapel/kelas ditambahkan untuk ${assignTarget.name}.`);
       await loadTeachers();
       await onContextChanged();
     } catch (err) {
@@ -389,17 +373,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   async function handleRemoveAssignment(assignmentId: number) {
     if (busyAssignId !== null) return;
     setBusyAssignId(assignmentId);
-    setTeacherFeedback(null);
     try {
       await teacherApi.deleteTeacherAssignment(token, assignmentId);
       setConfirmRemoveAssignId(null);
+      toast.success('Penugasan mapel/kelas berhasil dihapus.');
       await loadTeachers();
       await onContextChanged();
     } catch (err) {
-      setTeacherFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal menghapus penugasan.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus penugasan.');
     } finally {
       setBusyAssignId(null);
     }
@@ -457,6 +438,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       });
       setImportResult(res);
       setImportModalTab('result');
+      toast.success(
+        `Impor selesai: ${res.summary.createdCount} akun baru, ${res.summary.updatedCount} diperbarui.`
+      );
       await loadTeachers();
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Gagal mengimpor data guru.');
@@ -525,14 +509,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           name: subjName,
           description: editingSubject.description || '',
         });
-        setSubjectFeedback({ type: 'ok', text: `Mata pelajaran "${subjName.trim()}" berhasil diperbarui.` });
+        toast.success(`Mata pelajaran "${subjName.trim()}" berhasil diperbarui.`);
       } else {
         await teacherApi.createSubject(token, {
           code: subjCode,
           name: subjName,
           description: '',
         });
-        setSubjectFeedback({ type: 'ok', text: `Mata pelajaran "${subjName.trim()}" berhasil ditambahkan.` });
+        toast.success(`Mata pelajaran "${subjName.trim()}" berhasil ditambahkan.`);
       }
       setShowSubjectModal(false);
       await loadSubjects();
@@ -548,19 +532,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   async function handleDeleteSubject(subjId: number) {
     if (busySubjectId !== null) return;
     setBusySubjectId(subjId);
-    setSubjectFeedback(null);
     try {
       await teacherApi.deleteSubject(token, subjId);
       setConfirmDeleteSubjectId(null);
-      setSubjectFeedback({ type: 'ok', text: 'Mata pelajaran telah dihapus.' });
+      toast.success('Mata pelajaran telah dihapus.');
       await loadSubjects();
       await loadTeachers();
       await onContextChanged();
     } catch (err) {
-      setSubjectFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal menghapus mata pelajaran.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus mata pelajaran.');
     } finally {
       setBusySubjectId(null);
     }
@@ -612,13 +592,13 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
           name: normalizedName,
           gradeLevel: classGradeInput,
         });
-        setClassFeedback({ type: 'ok', text: `Kelas "${normalizedName}" berhasil diperbarui.` });
+        toast.success(`Kelas "${normalizedName}" berhasil diperbarui.`);
       } else {
         await teacherApi.createClass(token, {
           name: normalizedName,
           gradeLevel: classGradeInput,
         });
-        setClassFeedback({ type: 'ok', text: `Kelas "${normalizedName}" berhasil ditambahkan.` });
+        toast.success(`Kelas "${normalizedName}" berhasil ditambahkan.`);
       }
       setShowClassModal(false);
       await loadClasses();
@@ -634,19 +614,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   async function handleDeleteClass(clsId: number) {
     if (busyClassId !== null) return;
     setBusyClassId(clsId);
-    setClassFeedback(null);
     try {
       await teacherApi.deleteClass(token, clsId);
       setConfirmDeleteClassId(null);
-      setClassFeedback({ type: 'ok', text: 'Kelas telah dihapus dari daftar master.' });
+      toast.success('Kelas telah dihapus dari daftar master.');
       await loadClasses();
       await loadTeachers();
       await onContextChanged();
     } catch (err) {
-      setClassFeedback({
-        type: 'err',
-        text: err instanceof Error ? err.message : 'Gagal menghapus kelas.',
-      });
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus kelas.');
     } finally {
       setBusyClassId(null);
     }
@@ -798,21 +774,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </button>
             </div>
           </div>
-
-          {teacherFeedback && (
-            <div
-              className={`p-4 rounded-xl border text-xs font-medium flex items-center justify-between gap-4 ${
-                teacherFeedback.type === 'ok'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-red-50 border-red-200 text-red-700'
-              }`}
-            >
-              <span>{teacherFeedback.text}</span>
-              <button type="button" onClick={() => setTeacherFeedback(null)} className="text-slate-500 hover:text-slate-800 cursor-pointer">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
 
           {/* Teachers Table */}
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -1010,21 +971,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
             </button>
           </div>
 
-          {subjectFeedback && (
-            <div
-              className={`p-4 rounded-xl border text-xs font-medium flex items-center justify-between gap-4 ${
-                subjectFeedback.type === 'ok'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-red-50 border-red-200 text-red-700'
-              }`}
-            >
-              <span>{subjectFeedback.text}</span>
-              <button type="button" onClick={() => setSubjectFeedback(null)} className="text-slate-500 hover:text-slate-800 cursor-pointer">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
-
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             {loadingSubjects ? (
               <div className="p-8 space-y-3">
@@ -1146,21 +1092,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               Tambah Kelas
             </button>
           </div>
-
-          {classFeedback && (
-            <div
-              className={`p-4 rounded-xl border text-xs font-medium flex items-center justify-between gap-4 ${
-                classFeedback.type === 'ok'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-red-50 border-red-200 text-red-700'
-              }`}
-            >
-              <span>{classFeedback.text}</span>
-              <button type="button" onClick={() => setClassFeedback(null)} className="text-slate-500 hover:text-slate-800 cursor-pointer">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
 
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             {loadingClasses ? (

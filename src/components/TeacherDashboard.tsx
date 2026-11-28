@@ -16,6 +16,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type {
   ClassItem,
   ExamPackage,
@@ -79,6 +80,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onLogout,
   onOpenStudentPortal,
 }) => {
+  const toast = useToast();
   const [initialUi] = useState(() => readStoredDashboardState(teacher.role));
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => initialUi.tab);
   const [packages, setPackages] = useState<ExamPackage[]>([]);
@@ -149,7 +151,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setPasswordSaving(true);
     try {
       const res = await teacherApi.changePassword(token, currentPassword, newPassword);
-      setPasswordSuccess(res.message || 'Kata sandi berhasil diperbarui.');
+      setShowPasswordModal(false);
+      toast.success(res.message || 'Kata sandi berhasil diperbarui.');
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, Smartphone, Shield, Server } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type { ClassItem, SubjectItem, TeacherAssignment } from '../types';
 
 interface ExambroDocsViewProps {
@@ -18,21 +19,20 @@ export const ExambroDocsView: React.FC<ExambroDocsViewProps> = ({
   classes,
   onRefreshContext,
 }) => {
+  const toast = useToast();
   const [subjectId, setSubjectId] = useState<number>(subjects[0]?.id || 1);
   const [classId, setClassId] = useState<number>(classes[0]?.id || 1);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
 
   async function handleAddAssignment(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setMsg(null);
     try {
       await teacherApi.addAssignment(token, subjectId, classId);
       await onRefreshContext();
-      setMsg('Penugasan mata pelajaran & kelas berhasil ditambahkan.');
+      toast.success('Penugasan mata pelajaran & kelas berhasil ditambahkan.');
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : 'Gagal menambah penugasan.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menambah penugasan.');
     } finally {
       setSaving(false);
     }
@@ -94,7 +94,6 @@ export const ExambroDocsView: React.FC<ExambroDocsViewProps> = ({
               <Plus className="w-3.5 h-3.5" />
               {saving ? 'Menyimpan...' : 'Tambahkan Penugasan'}
             </button>
-            {msg && <p className="text-xs text-slate-700 font-medium">{msg}</p>}
           </form>
         </div>
       </div>

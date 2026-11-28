@@ -23,6 +23,7 @@ import {
   Printer,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type { ClassItem, ImportStudentsResult, StudentRecord } from '../types';
 
 interface StudentsViewProps {
@@ -86,6 +87,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   teacherRole,
   onClassesChanged,
 }) => {
+  const toast = useToast();
   const isAdmin = teacherRole === 'ADMIN';
 
   const [selectedClassId, setSelectedClassId] = useState<string>('ALL');
@@ -103,7 +105,6 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     title: string;
   } | null>(null);
   const [copiedPin, setCopiedPin] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Add single student state
   const [nis, setNis] = useState('');
@@ -217,7 +218,6 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   async function loadStudents() {
     setLoading(true);
-    setError(null);
     try {
       const res = await teacherApi.getStudents(
         token,
@@ -225,7 +225,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       );
       setStudents(res.students);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal memuat data siswa.');
+      toast.error(err instanceof Error ? err.message : 'Gagal memuat data siswa.');
     } finally {
       setLoading(false);
       setHasLoaded(true);
@@ -253,6 +253,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     try {
       const res = await teacherApi.resetStudentPin(token, pinTargetStudent.id, trimmed || undefined);
       setPinTargetStudent(null);
+      toast.success(`PIN Semester untuk ${res.name} berhasil diperbarui.`);
       setRevealedPin({
         nis: res.nis,
         name: res.name,
@@ -274,6 +275,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     try {
       const res = await teacherApi.resetStudentPin(token, pinTargetStudent.id);
       setPinTargetStudent(null);
+      toast.success(`PIN Semester baru untuk ${res.name} berhasil di-generate.`);
       setRevealedPin({
         nis: res.nis,
         name: res.name,
@@ -292,7 +294,6 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     e.preventDefault();
     if (saving) return;
     setSaving(true);
-    setError(null);
     try {
       const res = await teacherApi.createStudent(token, {
         nis,
@@ -304,6 +305,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       setNis('');
       setName('');
       setCustomPin('');
+      toast.success(`Siswa "${res.student.name}" berhasil ditambahkan.`);
       setRevealedPin({
         nis: res.student.nis,
         name: res.student.name,
@@ -315,7 +317,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         await onClassesChanged();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menambahkan siswa.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menambahkan siswa.');
     } finally {
       setSaving(false);
     }
@@ -348,6 +350,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         classId: editClassId,
       });
       setEditTargetStudent(null);
+      toast.success(`Data siswa "${editName.trim()}" berhasil diperbarui.`);
       await loadStudents();
       if (onClassesChanged) {
         await onClassesChanged();
@@ -360,18 +363,18 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   }
 
   async function handleDeleteStudent(studentId: number) {
-    if (!isAdmin || deletingStudentId !== null) return;
+    if (deletingStudentId !== null) return;
     setDeletingStudentId(studentId);
-    setError(null);
     try {
       await teacherApi.deleteStudent(token, studentId);
       setConfirmDeleteStudentId(null);
+      toast.success('Data siswa berhasil dihapus.');
       await loadStudents();
       if (onClassesChanged) {
         await onClassesChanged();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal menghapus data siswa.');
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus data siswa.');
     } finally {
       setDeletingStudentId(null);
     }
@@ -450,6 +453,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       });
       setImportResult(res);
       setImportModalTab('result');
+      toast.success(
+        `Impor siswa selesai: ${res.summary.createdCount} baru, ${res.summary.updatedCount} diperbarui.`
+      );
       await loadStudents();
       if (onClassesChanged) {
         await onClassesChanged();
@@ -606,10 +612,6 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         </div>
       </div>
 
-      {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs font-medium text-red-700">{error}</div>
-      )}
-
       <div
         className={`bg-white border border-slate-200 rounded-xl overflow-hidden min-h-[420px] transition-opacity duration-150 ${
           loading && hasLoaded ? 'opacity-60' : 'opacity-100'
@@ -623,7 +625,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <col className="w-[82px]" />
               <col className="w-[132px]" />
               <col className="w-[168px]" />
-              <col className="w-[210px]" />
+              <col className="w-[228px]" />
             </colgroup>
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">
@@ -725,36 +727,35 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                             Edit
                           </button>
                           {isAdmin ? (
-                            <>
-                              <button
-                                type="button"
-                                disabled={deletingStudentId === st.id}
-                                onClick={() => openPinModal(st)}
-                                className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
-                                title="Ubah / Reset PIN Semester"
-                              >
-                                <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
-                                PIN
-                              </button>
-                              <button
-                                type="button"
-                                disabled={deletingStudentId === st.id}
-                                onClick={() => setConfirmDeleteStudentId(st.id)}
-                                className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors cursor-pointer"
-                                title="Hapus Siswa"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              disabled={deletingStudentId === st.id}
+                              onClick={() => openPinModal(st)}
+                              className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                              title="Ubah / Reset PIN Semester"
+                            >
+                              <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
+                              PIN
+                            </button>
                           ) : (
                             <span
-                              className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 whitespace-nowrap pl-1"
-                              title="Hanya Admin Penanggung Jawab Ujian Semester yang dapat mengubah PIN atau menghapus siswa"
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 whitespace-nowrap px-1"
+                              title="Hanya Admin Penanggung Jawab Ujian Semester yang dapat mengubah PIN"
                             >
                               <Lock className="w-3 h-3 shrink-0" aria-hidden="true" />
                               PIN: Admin
                             </span>
                           )}
+                          <button
+                            type="button"
+                            disabled={deletingStudentId === st.id}
+                            onClick={() => setConfirmDeleteStudentId(st.id)}
+                            className="inline-flex items-center justify-center p-1.5 text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 hover:text-red-700 disabled:opacity-50 rounded-lg transition-colors cursor-pointer"
+                            title="Hapus Siswa"
+                            aria-label={`Hapus ${st.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          </button>
                         </div>
                       )}
                     </td>

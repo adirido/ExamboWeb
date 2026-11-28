@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { TeacherLogin } from './components/TeacherLogin';
 import { TeacherDashboard } from './components/TeacherDashboard';
 import { StudentExamPortal } from './components/StudentExamPortal';
+import { ToastProvider } from './components/ToastProvider';
 import type { StudentExamRouteParams, TeacherProfile } from './types';
 
 function parseRouteFromLocation(): {
@@ -112,30 +113,26 @@ export default function App() {
     setTeacherProfile(null);
   }
 
-  if (routeState.mode === 'student') {
-    return (
-      <StudentExamPortal
-        routeParams={routeState.studentParams}
-        onBackToTeacher={openTeacherPortal}
-      />
-    );
-  }
-
-  if (!teacherToken || !teacherProfile) {
-    return (
-      <TeacherLogin
-        onSuccess={handleTeacherLogin}
-        onOpenStudentPortal={() => openStudentPortal(false)}
-      />
-    );
-  }
-
   return (
-    <TeacherDashboard
-      token={teacherToken}
-      teacher={teacherProfile}
-      onLogout={handleTeacherLogout}
-      onOpenStudentPortal={() => openStudentPortal(true)}
-    />
+    <ToastProvider>
+      {routeState.mode === 'student' ? (
+        <StudentExamPortal
+          routeParams={routeState.studentParams}
+          onBackToTeacher={openTeacherPortal}
+        />
+      ) : !teacherToken || !teacherProfile ? (
+        <TeacherLogin
+          onSuccess={handleTeacherLogin}
+          onOpenStudentPortal={() => openStudentPortal(false)}
+        />
+      ) : (
+        <TeacherDashboard
+          token={teacherToken}
+          teacher={teacherProfile}
+          onLogout={handleTeacherLogout}
+          onOpenStudentPortal={() => openStudentPortal(true)}
+        />
+      )}
+    </ToastProvider>
   );
 }

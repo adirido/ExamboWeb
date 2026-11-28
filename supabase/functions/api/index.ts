@@ -2968,12 +2968,25 @@ Deno.serve(async (req: Request) => {
       }
 
       if (method === 'DELETE') {
+        const { data: existing } = await supabase
+          .from('students')
+          .select('id, class_id')
+          .eq('id', studentId)
+          .maybeSingle();
+
+        if (!existing) {
+          return jsonResponse(req, { error: 'Siswa tidak ditemukan.' }, 404);
+        }
+
         if (auth.teacher!.role !== 'ADMIN') {
-          return jsonResponse(
-            req,
-            { error: 'Akses ditolak. Hanya Admin Sekolah yang dapat menghapus data siswa.' },
-            403
-          );
+          const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+          if (!scope.classIds.includes(existing.class_id)) {
+            return jsonResponse(
+              req,
+              { error: 'Akses ditolak. Anda hanya dapat menghapus data siswa pada kelas penugasan Anda.' },
+              403
+            );
+          }
         }
 
         const { data: deleted } = await supabase

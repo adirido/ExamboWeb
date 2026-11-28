@@ -16,6 +16,7 @@ import {
   Search,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import type {
   ClassItem,
   ExamPackage,
@@ -52,6 +53,7 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   onOpenQuestions,
   onOpenRecap,
 }) => {
+  const toast = useToast();
   const isAdmin = teacherRole === 'ADMIN';
   const canCreatePackage = isAdmin || assignments.length > 0;
   const [filterClass, setFilterClass] = useState<string>('ALL');
@@ -64,7 +66,6 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmRotateId, setConfirmRotateId] = useState<number | null>(null);
-  const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const filterSubjects: SubjectItem[] = isAdmin
     ? subjects
@@ -174,12 +175,14 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   async function handleToggleActive(pkg: ExamPackage) {
     if (busyId !== null) return;
     setBusyId(pkg.id);
-    setFeedback(null);
     try {
       await teacherApi.togglePackageActive(token, pkg.id);
       await onRefresh();
+      toast.success(
+        `Paket ujian "${pkg.title}" berhasil ${pkg.is_active === 1 ? 'dinonaktifkan' : 'diaktifkan'}.`
+      );
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal mengubah status paket.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal mengubah status paket.');
     } finally {
       setBusyId(null);
     }
@@ -188,17 +191,15 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   async function handleRotateToken(pkg: ExamPackage) {
     if (busyId !== null) return;
     setBusyId(pkg.id);
-    setFeedback(null);
     try {
       const res = await teacherApi.rotateToken(token, pkg.id);
       setConfirmRotateId(null);
       await onRefresh();
-      setFeedback({
-        type: 'ok',
-        text: `Token untuk "${pkg.title}" berhasil dirotasi menjadi ${res.currentToken}. Token lama otomatis tidak berlaku.`,
-      });
+      toast.success(
+        `Token untuk "${pkg.title}" berhasil dirotasi menjadi ${res.currentToken}. Token lama otomatis tidak berlaku.`
+      );
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal merotasi token.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal merotasi token.');
     } finally {
       setBusyId(null);
     }
@@ -207,13 +208,12 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
   async function handleOpenQr(pkg: ExamPackage) {
     if (qrLoading) return;
     setQrLoading(true);
-    setFeedback(null);
     try {
       const portalBaseUrl = `${window.location.origin}${window.location.pathname}`;
       const data = await teacherApi.getPackageQr(token, pkg.id, portalBaseUrl);
       setQrModalData(data);
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal membuat QR Code.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal membuat QR Code.');
     } finally {
       setQrLoading(false);
     }
@@ -226,9 +226,9 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
       await teacherApi.deletePackage(token, pkgId);
       setConfirmDeleteId(null);
       await onRefresh();
-      setFeedback({ type: 'ok', text: 'Paket ujian telah dihapus.' });
+      toast.success('Paket ujian telah dihapus.');
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal menghapus paket.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal menghapus paket.');
     } finally {
       setBusyId(null);
     }
@@ -236,10 +236,7 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
 
   function openCreateModal() {
     if (!canCreatePackage) {
-      setFeedback({
-        type: 'err',
-        text: 'Akun Anda belum memiliki penugasan mata pelajaran & kelas dari Admin Sekolah.',
-      });
+      toast.error('Akun Anda belum memiliki penugasan mata pelajaran & kelas dari Admin Sekolah.');
       return;
     }
     const initialSubject = assignments[0]?.subject_id || subjects[0]?.id || 0;
@@ -264,11 +261,10 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
     e.preventDefault();
     if (creating) return;
     if (selectedClassIds.length === 0) {
-      setFeedback({ type: 'err', text: 'Pilih minimal satu kelas target ujian.' });
+      toast.error('Pilih minimal satu kelas target ujian.');
       return;
     }
     setCreating(true);
-    setFeedback(null);
     try {
       const payloadProctors: Record<string, number | null> = {};
       if (isAdmin) {
@@ -296,15 +292,13 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
       setCloneFromPackageId('');
       setProctorsByClass({});
       await onRefresh();
-      setFeedback({
-        type: 'ok',
-        text:
-          createdCount > 1
-            ? `${createdCount} paket ujian kelas paralel berhasil dibuat dalam jadwal bersamaan dan Bank Soal otomatis tersinkron.`
-            : 'Paket ujian baru berhasil dibuat dan siap digunakan.',
-      });
+      toast.success(
+        createdCount > 1
+          ? `${createdCount} paket ujian kelas paralel berhasil dibuat dalam jadwal bersamaan dan Bank Soal otomatis tersinkron.`
+          : 'Paket ujian baru berhasil dibuat dan siap digunakan.'
+      );
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal membuat paket ujian.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal membuat paket ujian.');
     } finally {
       setCreating(false);
     }
@@ -325,14 +319,12 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
     setEditShuffleQuestions(pkg.shuffle_questions === 1);
     setEditShuffleOptions(pkg.shuffle_options === 1);
     setEditIsActive(pkg.is_active === 1);
-    setFeedback(null);
   }
 
   async function handleEditSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!editingPackage || savingEdit) return;
     setSavingEdit(true);
-    setFeedback(null);
     try {
       await teacherApi.updatePackage(token, editingPackage.id, {
         title: editTitle.trim(),
@@ -349,9 +341,9 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
       });
       setEditingPackage(null);
       await onRefresh();
-      setFeedback({ type: 'ok', text: `Paket ujian "${editTitle.trim()}" berhasil diperbarui.` });
+      toast.success(`Paket ujian "${editTitle.trim()}" berhasil diperbarui.`);
     } catch (err) {
-      setFeedback({ type: 'err', text: err instanceof Error ? err.message : 'Gagal memperbarui paket ujian.' });
+      toast.error(err instanceof Error ? err.message : 'Gagal memperbarui paket ujian.');
     } finally {
       setSavingEdit(false);
     }
@@ -435,21 +427,6 @@ export const PackagesView: React.FC<PackagesViewProps> = ({
           </button>
         </div>
       </div>
-
-      {feedback && (
-        <div
-          className={`p-4 rounded-xl border text-xs font-medium flex items-center justify-between gap-4 ${
-            feedback.type === 'ok'
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-              : 'bg-red-50 border-red-200 text-red-700'
-          }`}
-        >
-          <span>{feedback.text}</span>
-          <button type="button" onClick={() => setFeedback(null)} className="text-slate-500 hover:text-slate-800 cursor-pointer">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* Package Grid */}
       {filtered.length === 0 ? (

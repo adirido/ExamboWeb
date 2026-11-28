@@ -15,6 +15,7 @@ import {
   FileDown,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import { useToast } from './ToastProvider';
 import {
   SCHOOL_NAME,
   downloadRecapReportPdf,
@@ -59,6 +60,7 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   selectedPackageId,
   onSelectPackage,
 }) => {
+  const toast = useToast();
   const activePkgId = selectedPackageId || packages[0]?.id || null;
   const activePkg = packages.find((p) => p.id === activePkgId) || null;
   const [pkgInfo, setPkgInfo] = useState<{
@@ -149,8 +151,9 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
     try {
       const slug = pkgInfo.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
       await teacherApi.downloadRecapCsv(token, activePkgId, `rekap-nilai-${slug}.csv`, kkm);
+      toast.success('File CSV rekap nilai berhasil diunduh.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gagal mengekspor CSV.');
+      toast.error(err instanceof Error ? err.message : 'Gagal mengekspor CSV.');
     } finally {
       setDownloading(false);
     }
@@ -173,6 +176,13 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
       },
       records,
     });
+    toast.success('File PDF rekap nilai (A4) berhasil diunduh.');
+  }
+
+  function handleDownloadAnswerSheetPdf() {
+    if (!reviewData) return;
+    downloadStudentAnswerSheetPdf(reviewData);
+    toast.success(`Lembar jawaban ${reviewData.student.name} (.pdf) berhasil diunduh.`);
   }
 
   function handlePrintRecap() {
@@ -883,7 +893,7 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                 {reviewData && (
                   <button
                     type="button"
-                    onClick={() => downloadStudentAnswerSheetPdf(reviewData)}
+                    onClick={handleDownloadAnswerSheetPdf}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
                   >
                     <FileDown className="w-3.5 h-3.5 shrink-0" />
@@ -1005,7 +1015,7 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                 <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
                   <button
                     type="button"
-                    onClick={() => downloadStudentAnswerSheetPdf(reviewData)}
+                    onClick={handleDownloadAnswerSheetPdf}
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
                   >
                     <FileDown className="w-3.5 h-3.5 shrink-0" />
