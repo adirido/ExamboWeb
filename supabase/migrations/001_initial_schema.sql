@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS system_meta (
 CREATE TABLE IF NOT EXISTS teachers (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
+  nip TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'TEACHER' CHECK (role IN ('TEACHER', 'ADMIN')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -49,9 +49,13 @@ CREATE TABLE IF NOT EXISTS students (
 CREATE TABLE IF NOT EXISTS exam_packages (
   id BIGSERIAL PRIMARY KEY,
   teacher_id BIGINT NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+  proctor_id BIGINT REFERENCES teachers(id) ON DELETE SET NULL,
   subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
   class_id BIGINT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
+  exam_date TEXT NOT NULL DEFAULT '',
+  kkm INTEGER NOT NULL DEFAULT 75,
+  schedule_group TEXT NOT NULL DEFAULT '',
   duration_minutes INTEGER NOT NULL DEFAULT 60,
   is_active INTEGER NOT NULL DEFAULT 0,
   max_violations INTEGER NOT NULL DEFAULT 3,
@@ -163,7 +167,8 @@ DECLARE
   ses_rizky BIGINT;
   ses_zahra BIGINT;
   now_ms BIGINT := (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT;
-  guru_hash TEXT := 'a72d83bbcb76720f2c148307e89a1681:e6e3a5abb1a9fda6f04a2a91961d1a5504b91c5c7618964802d831c09356d34f8d9ed8cda969fe3868e7089621e2ad21b1bc111a2797ad485e21e69d5e1a6436';
+  budi_hash TEXT := '1054e2e19fc591cd3701f76a97f1aed1:2cf1cd79c51ba17a8e1aec3eb349c7fedb1a45bdb00974dc7f34779bef58d89e39904d1acd03e29da11527d0ca010203e4a7e8373441c759f7eabe38de69f71a';
+  siti_hash TEXT := '63a19183a71c33ba1c0cc6cb4b70d701:d258024ef1db65df26b3fb5f25771e0bfc2f6891feddb867f4ab62ac456118963aedf831b745575a429240364779de5529b457c7436562dc7d16148a47caff1a';
   pin_hash TEXT := 'a18e47fdcbb06e52bba4d614ab84c498:dd02ae0cae08e5c6bb66baf4edeb8c45be5b99a210496a2d97e5cb7af595767c133701716579b97296416df392a7d22f9aba1afd655ba69b1481c5b3bbffb3cf';
   opt_orders TEXT;
 BEGIN
@@ -171,12 +176,12 @@ BEGIN
     RETURN;
   END IF;
 
-  INSERT INTO teachers (name, email, password_hash, role)
-  VALUES ('Budi Santoso, S.Pd.', 'budi.santoso@examflow.sch.id', guru_hash, 'ADMIN')
+  INSERT INTO teachers (name, nip, password_hash, role)
+  VALUES ('Budi Santoso, S.Pd.', '252500', budi_hash, 'ADMIN')
   RETURNING id INTO t1;
 
-  INSERT INTO teachers (name, email, password_hash, role)
-  VALUES ('Siti Aminah, M.Pd.', 'siti.aminah@examflow.sch.id', guru_hash, 'TEACHER')
+  INSERT INTO teachers (name, nip, password_hash, role)
+  VALUES ('Siti Aminah, M.Pd.', '252501', siti_hash, 'TEACHER')
   RETURNING id INTO t2;
 
   INSERT INTO subjects (code, name, description)

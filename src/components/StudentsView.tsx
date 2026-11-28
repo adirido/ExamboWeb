@@ -32,20 +32,20 @@ interface StudentsViewProps {
   onClassesChanged?: () => Promise<void>;
 }
 
-const TEACHER_SAMPLE_ROWS = [
-  '20260106,Budi Santoso,7A',
-  '20260107,Citra Dewi Lestari,7B',
-  '20260108,Dian Kusuma,8A',
-  '20260109,Eko Prasetyo,8B',
-].join('\n');
+function buildTeacherSampleRows(classes: ClassItem[]): string {
+  const c1 = classes[0]?.name || '8A';
+  const c2 = classes[1]?.name || c1;
+  return [
+    `20260106,Budi Santoso,${c1}`,
+    `20260107,Citra Dewi Lestari,${c2}`,
+    `20260108,Dian Kusuma,${c1}`,
+    `20260109,Eko Prasetyo,${c2}`,
+  ].join('\n');
+}
 
-const TEACHER_TEMPLATE_CSV = [
-  'NIS,Nama Lengkap,Kelas',
-  '20260106,Budi Santoso,7A',
-  '20260107,Citra Dewi Lestari,7B',
-  '20260108,Dian Kusuma,8A',
-  '20260109,Eko Prasetyo,8B',
-].join('\n');
+function buildTeacherTemplateCsv(classes: ClassItem[]): string {
+  return ['NIS,Nama Lengkap,Kelas', buildTeacherSampleRows(classes)].join('\n');
+}
 
 const ADMIN_SAMPLE_ROWS = [
   '20260106,Budi Santoso,7A',
@@ -145,6 +145,17 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   const [printCardHeader, setPrintCardHeader] = useState('Kartu Peserta Ujian Semester');
   const [printShowPin, setPrintShowPin] = useState(true);
 
+  const hasAssignedClasses = isAdmin || classes.length > 0;
+
+  useEffect(() => {
+    if (classes.length > 0 && !classes.some((c) => c.id === classId)) {
+      setClassId(classes[0].id);
+    }
+    if (selectedClassId !== 'ALL' && !classes.some((c) => String(c.id) === selectedClassId)) {
+      setSelectedClassId('ALL');
+    }
+  }, [classes]);
+
   useEffect(() => {
     loadStudents();
   }, [selectedClassId]);
@@ -157,20 +168,52 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       Boolean(revealedPin) ||
       Boolean(editTargetStudent) ||
       showPrintModal;
-    if (!anyModalOpen) return;
+    if (!anyModalOpen && confirmDeleteStudentId === null) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setShowImportModal(false);
-        setShowAddModal(false);
-        setPinTargetStudent(null);
-        setRevealedPin(null);
-        setEditTargetStudent(null);
-        setShowPrintModal(false);
+        if (importing || saving || updatingPin || savingEdit) return;
+        if (showImportModal) {
+          setShowImportModal(false);
+          return;
+        }
+        if (showAddModal) {
+          setShowAddModal(false);
+          return;
+        }
+        if (pinTargetStudent) {
+          setPinTargetStudent(null);
+          return;
+        }
+        if (revealedPin) {
+          setRevealedPin(null);
+          return;
+        }
+        if (editTargetStudent) {
+          setEditTargetStudent(null);
+          return;
+        }
+        if (showPrintModal) {
+          setShowPrintModal(false);
+          return;
+        }
+        setConfirmDeleteStudentId(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showImportModal, showAddModal, pinTargetStudent, revealedPin, editTargetStudent, showPrintModal]);
+  }, [
+    showImportModal,
+    showAddModal,
+    pinTargetStudent,
+    revealedPin,
+    editTargetStudent,
+    showPrintModal,
+    importing,
+    saving,
+    updatingPin,
+    savingEdit,
+    confirmDeleteStudentId,
+  ]);
 
   async function loadStudents() {
     setLoading(true);
@@ -198,7 +241,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   async function handleSaveAdminPin(e: React.FormEvent) {
     e.preventDefault();
-    if (!isAdmin || !pinTargetStudent) return;
+    if (!isAdmin || !pinTargetStudent || updatingPin) return;
     const trimmed = pinInput.trim();
     if (trimmed && !/^\d{4,6}$/.test(trimmed)) {
       setPinModalError('PIN Semester harus terdiri dari 4–6 digit angka.');
@@ -225,7 +268,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   }
 
   async function handleQuickGeneratePin() {
-    if (!isAdmin || !pinTargetStudent) return;
+    if (!isAdmin || !pinTargetStudent || updatingPin) return;
     setUpdatingPin(true);
     setPinModalError(null);
     try {
@@ -247,6 +290,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   async function handleAddStudent(e: React.FormEvent) {
     e.preventDefault();
+    if (saving) return;
     setSaving(true);
     setError(null);
     try {
@@ -294,7 +338,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   async function handleSaveEditStudent(e: React.FormEvent) {
     e.preventDefault();
-    if (!editTargetStudent) return;
+    if (!editTargetStudent || savingEdit) return;
     setEditModalError(null);
     setSavingEdit(true);
     try {
@@ -316,7 +360,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   }
 
   async function handleDeleteStudent(studentId: number) {
-    if (!isAdmin) return;
+    if (!isAdmin || deletingStudentId !== null) return;
     setDeletingStudentId(studentId);
     setError(null);
     try {
@@ -353,14 +397,14 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   }
 
   function handleLoadSample() {
-    setImportText(isAdmin ? ADMIN_SAMPLE_ROWS : TEACHER_SAMPLE_ROWS);
+    setImportText(isAdmin ? ADMIN_SAMPLE_ROWS : buildTeacherSampleRows(classes));
     setImportFileName(null);
     setImportError(null);
     setImportResult(null);
   }
 
   function handleDownloadTemplate() {
-    const content = isAdmin ? ADMIN_TEMPLATE_CSV : TEACHER_TEMPLATE_CSV;
+    const content = isAdmin ? ADMIN_TEMPLATE_CSV : buildTeacherTemplateCsv(classes);
     const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -392,6 +436,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   async function handleSubmitImport(e: React.FormEvent) {
     e.preventDefault();
+    if (importing) return;
     if (!importText.trim()) {
       setImportError('Silakan tempel data siswa, klik Muat Contoh, atau pilih file .CSV terlebih dahulu.');
       return;
@@ -466,7 +511,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   return (
     <div className="space-y-6">
-      <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col gap-4">
         <div className="min-w-0">
           <h2 className="font-display text-lg font-bold text-slate-900">Manajemen Siswa & PIN Semester</h2>
           <p className="text-xs text-slate-500 mt-1">
@@ -476,80 +521,88 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0">
-          <div className="relative w-full sm:w-44 shrink-0">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Cari NIS atau nama..."
-              className="w-full pl-8 pr-7 py-2 text-xs bg-white border border-slate-300 rounded-lg"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
-                aria-label="Hapus pencarian siswa"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-3 border-t border-slate-100">
+          <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-0">
+            <div className="relative w-full sm:w-56">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari NIS atau nama..."
+                className="w-full pl-8 pr-7 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="p-0.5 text-slate-400 hover:text-slate-700 absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer"
+                  aria-label="Hapus pencarian siswa"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            <select
+              aria-label="Filter Kelas Siswa"
+              value={selectedClassId}
+              onChange={(e) => setSelectedClassId(e.target.value)}
+              className="w-full sm:w-40 px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-700 truncate"
+            >
+              <option value="ALL">{isAdmin ? 'Semua Kelas' : 'Semua Kelas Saya'}</option>
+              {classes.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  Kelas {c.name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <select
-            aria-label="Filter Kelas Siswa"
-            value={selectedClassId}
-            onChange={(e) => setSelectedClassId(e.target.value)}
-            className="w-full sm:w-36 px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-700 truncate shrink-0"
-          >
-            <option value="ALL">Semua Kelas</option>
-            {classes.map((c) => (
-              <option key={c.id} value={String(c.id)}>
-                Kelas {c.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowPins((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+              title={showPins ? 'Sembunyikan PIN di layar' : 'Tampilkan PIN di layar'}
+            >
+              {showPins ? <EyeOff className="w-3.5 h-3.5 text-slate-600" /> : <Eye className="w-3.5 h-3.5 text-blue-700" />}
+              {showPins ? 'Sembunyikan PIN' : 'Tampilkan PIN'}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setShowPins((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
-            title={showPins ? 'Sembunyikan PIN di layar' : 'Tampilkan PIN di layar'}
-          >
-            {showPins ? <EyeOff className="w-3.5 h-3.5 text-slate-600" /> : <Eye className="w-3.5 h-3.5 text-blue-700" />}
-            {showPins ? 'Sembunyikan PIN' : 'Tampilkan PIN'}
-          </button>
+            <button
+              type="button"
+              disabled={filteredStudents.length === 0}
+              onClick={() => setShowPrintModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+              title="Cetak Kartu Peserta Ujian sesuai filter saat ini"
+            >
+              <Printer className="w-3.5 h-3.5 text-slate-700" aria-hidden="true" />
+              Cetak Kartu
+            </button>
 
-          <button
-            type="button"
-            disabled={filteredStudents.length === 0}
-            onClick={() => setShowPrintModal(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-            title="Cetak Kartu Peserta Ujian sesuai filter saat ini"
-          >
-            <Printer className="w-3.5 h-3.5 text-slate-700" aria-hidden="true" />
-            Cetak Kartu
-          </button>
+            <button
+              type="button"
+              disabled={!hasAssignedClasses}
+              onClick={openImportModal}
+              title={!hasAssignedClasses ? 'Hubungi Admin Sekolah untuk menetapkan kelas mengajar Anda' : undefined}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-blue-700" aria-hidden="true" />
+              Import Siswa
+            </button>
 
-          <button
-            type="button"
-            onClick={openImportModal}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Upload className="w-3.5 h-3.5 text-blue-700" aria-hidden="true" />
-            Import Siswa
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Tambah Siswa
-          </button>
+            <button
+              type="button"
+              disabled={!hasAssignedClasses}
+              onClick={() => setShowAddModal(true)}
+              title={!hasAssignedClasses ? 'Hubungi Admin Sekolah untuk menetapkan kelas mengajar Anda' : undefined}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Tambah Siswa
+            </button>
+          </div>
         </div>
       </div>
 
@@ -593,7 +646,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                 <tr>
                   <td colSpan={6} className="py-12 px-5 text-center text-slate-500">
                     <Users className="w-6 h-6 text-slate-400 mx-auto mb-2" />
-                    Tidak ada siswa yang sesuai dengan filter.
+                    {!hasAssignedClasses
+                      ? 'Akun Anda belum memiliki penugasan kelas mengajar dari Admin Sekolah.'
+                      : 'Tidak ada siswa yang sesuai dengan filter.'}
                   </td>
                 </tr>
               ) : (
@@ -644,14 +699,15 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                             type="button"
                             disabled={deletingStudentId === st.id}
                             onClick={() => handleDeleteStudent(st.id)}
-                            className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                            className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded cursor-pointer"
                           >
-                            Ya
+                            {deletingStudentId === st.id ? '...' : 'Ya'}
                           </button>
                           <button
                             type="button"
+                            disabled={deletingStudentId === st.id}
                             onClick={() => setConfirmDeleteStudentId(null)}
-                            className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                            className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                           >
                             Batal
                           </button>
@@ -660,8 +716,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                         <div className="inline-flex items-center justify-end gap-1.5">
                           <button
                             type="button"
+                            disabled={deletingStudentId === st.id}
                             onClick={() => openEditStudentModal(st)}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
                             title="Edit NIS, Nama, atau Kelas"
                           >
                             <Pencil className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -671,8 +728,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                             <>
                               <button
                                 type="button"
+                                disabled={deletingStudentId === st.id}
                                 onClick={() => openPinModal(st)}
-                                className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                                className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
                                 title="Ubah / Reset PIN Semester"
                               >
                                 <KeyRound className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -680,8 +738,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                               </button>
                               <button
                                 type="button"
+                                disabled={deletingStudentId === st.id}
                                 onClick={() => setConfirmDeleteStudentId(st.id)}
-                                className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors cursor-pointer"
                                 title="Hapus Siswa"
                               >
                                 <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -710,9 +769,14 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Import Data Siswa Modal */}
       {showImportModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Import Data Siswa"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowImportModal(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !importing && !importText.trim()) {
+              setShowImportModal(false);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl h-[84vh] max-h-[720px] min-h-[520px] flex flex-col overflow-hidden">
@@ -728,8 +792,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               </div>
               <button
                 type="button"
+                disabled={importing}
                 onClick={() => setShowImportModal(false)}
-                className="text-slate-400 hover:text-slate-700 shrink-0 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 shrink-0 cursor-pointer"
                 aria-label="Tutup modal import"
               >
                 <X className="w-5 h-5" />
@@ -1045,8 +1110,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <div className="flex items-center gap-3 shrink-0">
                 <button
                   type="button"
+                  disabled={importing}
                   onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {importResult ? 'Tutup' : 'Batal'}
                 </button>
@@ -1068,15 +1134,25 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Add Student Modal (Teacher: NIS, Nama, Kelas only; Admin: + optional PIN) */}
       {showAddModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Tambah Siswa Baru"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowAddModal(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !saving && !nis.trim() && !name.trim() && !customPin.trim()) {
+              setShowAddModal(false);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-lg font-bold text-slate-900">Tambah Siswa Baru</h3>
-              <button type="button" onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1142,15 +1218,16 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
                 >
                   {saving ? 'Menyimpan...' : 'Simpan Siswa'}
                 </button>
@@ -1163,9 +1240,14 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Admin-Only Edit / Reset Semester PIN Modal */}
       {isAdmin && pinTargetStudent && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Ubah atau Reset PIN Semester"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setPinTargetStudent(null);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !updatingPin && !pinInput.trim()) {
+              setPinTargetStudent(null);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
@@ -1173,8 +1255,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <h3 className="font-display text-base font-bold text-slate-900">Ubah / Reset PIN Semester</h3>
               <button
                 type="button"
+                disabled={updatingPin}
                 onClick={() => setPinTargetStudent(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1243,8 +1326,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    disabled={updatingPin}
                     onClick={() => setPinTargetStudent(null)}
-                    className="px-3 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
+                    className="px-3 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50 cursor-pointer"
                   >
                     Batal
                   </button>
@@ -1265,8 +1349,11 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Revealed PIN Confirmation Modal */}
       {revealedPin && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={revealedPin.title}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+          onMouseDown={(e) => {
             if (e.target === e.currentTarget) setRevealedPin(null);
           }}
         >
@@ -1312,9 +1399,18 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Edit Student Modal */}
       {editTargetStudent && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Edit Data Siswa"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setEditTargetStudent(null);
+          onMouseDown={(e) => {
+            const isDirty =
+              editNis.trim() !== editTargetStudent.nis ||
+              editName.trim() !== editTargetStudent.name ||
+              editClassId !== editTargetStudent.class_id;
+            if (e.target === e.currentTarget && !savingEdit && !isDirty) {
+              setEditTargetStudent(null);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
@@ -1322,8 +1418,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <h3 className="font-display text-base font-bold text-slate-900">Edit Data Siswa</h3>
               <button
                 type="button"
+                disabled={savingEdit}
                 onClick={() => setEditTargetStudent(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1374,8 +1471,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={savingEdit}
                   onClick={() => setEditTargetStudent(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
@@ -1395,8 +1493,11 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
       {/* Printable Exam Participant Cards Modal */}
       {showPrintModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Cetak Kartu Peserta Ujian"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+          onMouseDown={(e) => {
             if (e.target === e.currentTarget) setShowPrintModal(false);
           }}
         >

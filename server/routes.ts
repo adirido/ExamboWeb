@@ -40,9 +40,13 @@ interface QuestionRow {
 interface PackageRow {
   id: number;
   teacher_id: number;
+  proctor_id: number | null;
   subject_id: number;
   class_id: number;
   title: string;
+  exam_date: string;
+  kkm: number;
+  schedule_group: string;
   duration_minutes: number;
   is_active: number;
   max_violations: number;
@@ -54,6 +58,20 @@ interface PackageRow {
   subject_name?: string;
   subject_code?: string;
   class_name?: string;
+  teacher_name?: string;
+  proctor_name?: string | null;
+}
+
+type PackageAccessRole = 'ADMIN' | 'OWNER' | 'PROCTOR' | 'NONE';
+
+function getPackageAccess(
+  pkg: { teacher_id: number; proctor_id: number | null },
+  teacher: { teacherId: number; role: 'ADMIN' | 'TEACHER' }
+): PackageAccessRole {
+  if (teacher.role === 'ADMIN') return 'ADMIN';
+  if (pkg.teacher_id === teacher.teacherId) return 'OWNER';
+  if (pkg.proctor_id !== null && Number(pkg.proctor_id) === teacher.teacherId) return 'PROCTOR';
+  return 'NONE';
 }
 
 interface SessionRow {
@@ -204,27 +222,36 @@ export function createApiRouter(): express.Router {
   // ==========================
   // 1. TEACHER AUTH & CONTEXT
   // ==========================
+  function normalizeTeacherNip(raw?: string): string {
+    return (raw || '').trim().toLowerCase();
+  }
+
+  function isValidTeacherNip(nip: string): boolean {
+    return nip.length >= 2 && nip.length <= 64 && /^[a-z0-9._-]+$/i.test(nip);
+  }
+
   router.post('/auth/login', (req: Request, res: Response) => {
-    const { email, password } = req.body as { email?: string; password?: string };
-    if (!email || !password) {
-      res.status(400).json({ error: 'Email dan kata sandi wajib diisi.' });
+    const { nip, email, password } = req.body as { nip?: string; email?: string; password?: string };
+    const cleanNip = normalizeTeacherNip(nip ?? email);
+    if (!cleanNip || !password) {
+      res.status(400).json({ error: 'NIP / ID Login dan kata sandi wajib diisi.' });
       return;
     }
 
     const teacher = db
-      .prepare('SELECT id, name, email, password_hash, role FROM teachers WHERE email = ?')
-      .get(email.trim().toLowerCase()) as
-      | { id: number; name: string; email: string; password_hash: string; role: 'TEACHER' | 'ADMIN' }
+      .prepare('SELECT id, name, nip, password_hash, role FROM teachers WHERE LOWER(nip) = ?')
+      .get(cleanNip) as
+      | { id: number; name: string; nip: string; password_hash: string; role: 'TEACHER' | 'ADMIN' }
       | undefined;
 
     if (!teacher || !verifySecret(password, teacher.password_hash)) {
-      res.status(401).json({ error: 'Email atau kata sandi tidak sesuai.' });
+      res.status(401).json({ error: 'NIP / ID Login atau kata sandi tidak sesuai.' });
       return;
     }
 
     const token = createTeacherToken({
       teacherId: teacher.id,
-      email: teacher.email,
+      nip: teacher.nip,
       name: teacher.name,
       role: teacher.role,
     });
@@ -234,7 +261,7 @@ export function createApiRouter(): express.Router {
       teacher: {
         id: teacher.id,
         name: teacher.name,
-        email: teacher.email,
+        nip: teacher.nip,
         role: teacher.role,
       },
     });
@@ -277,8 +304,33 @@ export function createApiRouter(): express.Router {
     res.json({ success: true, message: 'Kata sandi berhasil diperbarui.' });
   });
 
+  function getTeacherAssignmentScope(teacherId: number): {
+    pairs: Set<string>;
+    subjectIds: number[];
+    classIds: number[];
+  } {
+    const rows = db
+      .prepare('SELECT subject_id, class_id FROM teacher_assignments WHERE teacher_id = ?')
+      .all(teacherId) as Array<{ subject_id: number; class_id: number }>;
+    const pairs = new Set<string>();
+    const subjectSet = new Set<number>();
+    const classSet = new Set<number>();
+    for (const r of rows) {
+      pairs.add(`${r.subject_id}:${r.class_id}`);
+      subjectSet.add(r.subject_id);
+      classSet.add(r.class_id);
+    }
+    return {
+      pairs,
+      subjectIds: Array.from(subjectSet),
+      classIds: Array.from(classSet),
+    };
+  }
+
   router.get('/teacher/context', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
-    const teacherId = req.teacher!.teacherId;
+    const teacher = req.teacher!;
+    const teacherId = teacher.teacherId;
+    const isAdmin = teacher.role === 'ADMIN';
     const assignments = db
       .prepare(`
         SELECT ta.id, ta.subject_id, ta.class_id,
@@ -290,20 +342,52 @@ export function createApiRouter(): express.Router {
         WHERE ta.teacher_id = ?
         ORDER BY s.name ASC, c.name ASC
       `)
-      .all(teacherId);
+      .all(teacherId) as Array<{
+      id: number;
+      subject_id: number;
+      class_id: number;
+      subject_code: string;
+      subject_name: string;
+      class_name: string;
+      grade_level: number;
+    }>;
 
-    const allSubjects = db.prepare('SELECT * FROM subjects ORDER BY name ASC').all();
-    const allClasses = db.prepare('SELECT * FROM classes ORDER BY name ASC').all();
+    const assignedSubjectIds = Array.from(new Set(assignments.map((a) => a.subject_id)));
+    const assignedClassIds = Array.from(new Set(assignments.map((a) => a.class_id)));
+
+    const subjects = isAdmin
+      ? db.prepare('SELECT * FROM subjects ORDER BY name ASC').all()
+      : assignedSubjectIds.length > 0
+        ? db
+            .prepare(`SELECT * FROM subjects WHERE id IN (${assignedSubjectIds.map(() => '?').join(',')}) ORDER BY name ASC`)
+            .all(...assignedSubjectIds)
+        : [];
+
+    const classes = isAdmin
+      ? db.prepare('SELECT * FROM classes ORDER BY grade_level ASC, name ASC').all()
+      : assignedClassIds.length > 0
+        ? db
+            .prepare(
+              `SELECT * FROM classes WHERE id IN (${assignedClassIds.map(() => '?').join(',')}) ORDER BY grade_level ASC, name ASC`
+            )
+            .all(...assignedClassIds)
+        : [];
+
+    const proctorTeachers = isAdmin
+      ? db.prepare('SELECT id, name, nip, role FROM teachers ORDER BY name ASC').all()
+      : [];
 
     res.json({
-      teacher: req.teacher,
+      teacher,
       assignments,
-      subjects: allSubjects,
-      classes: allClasses,
+      subjects,
+      classes,
+      teachers: proctorTeachers,
     });
   });
 
   router.post('/teacher/assignments', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    if (!requireAdminRole(req, res)) return;
     const teacherId = req.teacher!.teacherId;
     const { subjectId, classId } = req.body as { subjectId?: number; classId?: number };
     if (!subjectId || !classId) {
@@ -341,7 +425,28 @@ export function createApiRouter(): express.Router {
     return true;
   }
 
-  router.get('/subjects', requireTeacherAuth, (_req: AuthenticatedTeacherRequest, res: Response) => {
+  router.get('/subjects', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const teacher = req.teacher!;
+    if (teacher.role !== 'ADMIN') {
+      const scope = getTeacherAssignmentScope(teacher.teacherId);
+      if (scope.subjectIds.length === 0) {
+        res.json({ subjects: [] });
+        return;
+      }
+      const rows = db
+        .prepare(`
+          SELECT s.id, s.code, s.name, s.description,
+                 (SELECT COUNT(*) FROM exam_packages ep WHERE ep.subject_id = s.id AND ep.teacher_id = ?) AS package_count,
+                 (SELECT COUNT(*) FROM questions q JOIN exam_packages ep2 ON ep2.id = q.package_id WHERE q.subject_id = s.id AND ep2.teacher_id = ?) AS question_count
+          FROM subjects s
+          WHERE s.id IN (${scope.subjectIds.map(() => '?').join(',')})
+          ORDER BY s.name ASC
+        `)
+        .all(teacher.teacherId, teacher.teacherId, ...scope.subjectIds);
+      res.json({ subjects: rows });
+      return;
+    }
+
     const rows = db
       .prepare(`
         SELECT s.id, s.code, s.name, s.description,
@@ -462,7 +567,28 @@ export function createApiRouter(): express.Router {
     return { cleanName, resolvedGrade };
   };
 
-  router.get('/classes', requireTeacherAuth, (_req: AuthenticatedTeacherRequest, res: Response) => {
+  router.get('/classes', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const teacher = req.teacher!;
+    if (teacher.role !== 'ADMIN') {
+      const scope = getTeacherAssignmentScope(teacher.teacherId);
+      if (scope.classIds.length === 0) {
+        res.json({ classes: [] });
+        return;
+      }
+      const rows = db
+        .prepare(`
+          SELECT c.id, c.name, c.grade_level,
+                 (SELECT COUNT(*) FROM students st WHERE st.class_id = c.id) AS student_count,
+                 (SELECT COUNT(*) FROM exam_packages ep WHERE ep.class_id = c.id AND (ep.teacher_id = ? OR ep.proctor_id = ?)) AS package_count
+          FROM classes c
+          WHERE c.id IN (${scope.classIds.map(() => '?').join(',')})
+          ORDER BY c.grade_level ASC, c.name ASC
+        `)
+        .all(teacher.teacherId, teacher.teacherId, ...scope.classIds);
+      res.json({ classes: rows });
+      return;
+    }
+
     const rows = db
       .prepare(`
         SELECT c.id, c.name, c.grade_level,
@@ -574,7 +700,7 @@ export function createApiRouter(): express.Router {
     if (!requireAdminRole(req, res)) return;
     const teachers = db
       .prepare(`
-        SELECT t.id, t.name, t.email, t.role, t.created_at,
+        SELECT t.id, t.name, t.nip, t.role, t.created_at,
                (SELECT COUNT(*) FROM exam_packages ep WHERE ep.teacher_id = t.id) AS package_count
         FROM teachers t
         ORDER BY CASE t.role WHEN 'ADMIN' THEN 0 ELSE 1 END, t.name ASC
@@ -582,7 +708,7 @@ export function createApiRouter(): express.Router {
       .all() as Array<{
       id: number;
       name: string;
-      email: string;
+      nip: string;
       role: 'TEACHER' | 'ADMIN';
       created_at: string;
       package_count: number;
@@ -619,19 +745,22 @@ export function createApiRouter(): express.Router {
 
   router.post('/admin/teachers', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     if (!requireAdminRole(req, res)) return;
-    const { name, email, password, role = 'TEACHER' } = req.body as {
+    const { name, nip, email, password, role = 'TEACHER' } = req.body as {
       name?: string;
+      nip?: string;
       email?: string;
       password?: string;
       role?: 'TEACHER' | 'ADMIN';
     };
 
     const cleanName = (name || '').trim();
-    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanNip = normalizeTeacherNip(nip ?? email);
     const cleanRole = role === 'ADMIN' ? 'ADMIN' : 'TEACHER';
 
-    if (!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      res.status(400).json({ error: 'Nama lengkap dan format email guru yang valid wajib diisi.' });
+    if (!cleanName || !isValidTeacherNip(cleanNip)) {
+      res.status(400).json({
+        error: 'Nama lengkap dan NIP / ID Login (2–64 karakter huruf/angka/._- tanpa spasi) wajib diisi.',
+      });
       return;
     }
     if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
@@ -641,15 +770,15 @@ export function createApiRouter(): express.Router {
 
     try {
       const info = db
-        .prepare('INSERT INTO teachers (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
-        .run(cleanName, cleanEmail, hashSecret(password), cleanRole);
+        .prepare('INSERT INTO teachers (name, nip, password_hash, role) VALUES (?, ?, ?, ?)')
+        .run(cleanName, cleanNip, hashSecret(password), cleanRole);
 
       const created = db
-        .prepare('SELECT id, name, email, role, created_at FROM teachers WHERE id = ?')
+        .prepare('SELECT id, name, nip, role, created_at FROM teachers WHERE id = ?')
         .get(Number(info.lastInsertRowid));
       res.status(201).json({ teacher: created });
     } catch {
-      res.status(409).json({ error: `Email "${cleanEmail}" sudah terdaftar.` });
+      res.status(409).json({ error: `NIP / ID Login "${cleanNip}" sudah terdaftar.` });
     }
   });
 
@@ -657,9 +786,9 @@ export function createApiRouter(): express.Router {
     if (!requireAdminRole(req, res)) return;
     const targetId = Number(req.params.id);
     const existing = db
-      .prepare('SELECT id, name, email, role, password_hash FROM teachers WHERE id = ?')
+      .prepare('SELECT id, name, nip, role, password_hash FROM teachers WHERE id = ?')
       .get(targetId) as
-      | { id: number; name: string; email: string; role: 'TEACHER' | 'ADMIN'; password_hash: string }
+      | { id: number; name: string; nip: string; role: 'TEACHER' | 'ADMIN'; password_hash: string }
       | undefined;
 
     if (!existing) {
@@ -667,19 +796,23 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    const { name, email, role, newPassword } = req.body as {
+    const { name, nip, email, role, newPassword } = req.body as {
       name?: string;
+      nip?: string;
       email?: string;
       role?: 'TEACHER' | 'ADMIN';
       newPassword?: string;
     };
 
+    const rawNip = nip !== undefined ? nip : email;
     const nextName = name !== undefined ? name.trim() : existing.name;
-    const nextEmail = email !== undefined ? email.trim().toLowerCase() : existing.email;
+    const nextNip = rawNip !== undefined ? normalizeTeacherNip(rawNip) : existing.nip;
     const nextRole = role === 'ADMIN' || role === 'TEACHER' ? role : existing.role;
 
-    if (!nextName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
-      res.status(400).json({ error: 'Nama lengkap dan email yang valid wajib diisi.' });
+    if (!nextName || !isValidTeacherNip(nextNip)) {
+      res.status(400).json({
+        error: 'Nama lengkap dan NIP / ID Login (2–64 karakter huruf/angka/._- tanpa spasi) wajib diisi.',
+      });
       return;
     }
 
@@ -703,19 +836,19 @@ export function createApiRouter(): express.Router {
     }
 
     try {
-      db.prepare('UPDATE teachers SET name = ?, email = ?, role = ?, password_hash = ? WHERE id = ?').run(
+      db.prepare('UPDATE teachers SET name = ?, nip = ?, role = ?, password_hash = ? WHERE id = ?').run(
         nextName,
-        nextEmail,
+        nextNip,
         nextRole,
         nextHash,
         targetId
       );
       const updated = db
-        .prepare('SELECT id, name, email, role, created_at FROM teachers WHERE id = ?')
+        .prepare('SELECT id, name, nip, role, created_at FROM teachers WHERE id = ?')
         .get(targetId);
       res.json({ teacher: updated });
     } catch {
-      res.status(409).json({ error: `Email "${nextEmail}" sudah digunakan akun lain.` });
+      res.status(409).json({ error: `NIP / ID Login "${nextNip}" sudah digunakan akun lain.` });
     }
   });
 
@@ -726,8 +859,8 @@ export function createApiRouter(): express.Router {
       if (!requireAdminRole(req, res)) return;
       const targetId = Number(req.params.id);
       const teacher = db
-        .prepare('SELECT id, name, email FROM teachers WHERE id = ?')
-        .get(targetId) as { id: number; name: string; email: string } | undefined;
+        .prepare('SELECT id, name, nip FROM teachers WHERE id = ?')
+        .get(targetId) as { id: number; name: string; nip: string } | undefined;
 
       if (!teacher) {
         res.status(404).json({ error: 'Akun guru tidak ditemukan.' });
@@ -747,7 +880,7 @@ export function createApiRouter(): express.Router {
       res.json({
         teacherId: teacher.id,
         name: teacher.name,
-        email: teacher.email,
+        nip: teacher.nip,
         newPassword,
       });
     }
@@ -879,17 +1012,17 @@ export function createApiRouter(): express.Router {
 
       const importedCredentials: Array<{
         name: string;
-        email: string;
+        nip: string;
         role: 'TEACHER' | 'ADMIN';
         password: string;
         action: 'CREATED' | 'UPDATED';
       }> = [];
-      const skipped: Array<{ lineNumber: number; email: string; name: string; reason: string }> = [];
+      const skipped: Array<{ lineNumber: number; nip: string; name: string; reason: string }> = [];
       const errors: Array<{ lineNumber: number; raw: string; reason: string }> = [];
 
-      const findStmt = db.prepare('SELECT id, name, email, role FROM teachers WHERE email = ?');
+      const findStmt = db.prepare('SELECT id, name, nip, role FROM teachers WHERE LOWER(nip) = ?');
       const insertStmt = db.prepare(
-        'INSERT INTO teachers (name, email, password_hash, role) VALUES (?, ?, ?, ?)'
+        'INSERT INTO teachers (name, nip, password_hash, role) VALUES (?, ?, ?, ?)'
       );
       const updateInfoStmt = db.prepare('UPDATE teachers SET name = ?, role = ? WHERE id = ?');
       const updateWithPassStmt = db.prepare(
@@ -907,7 +1040,7 @@ export function createApiRouter(): express.Router {
           if (idx === 0) {
             const c0 = (cols[0] || '').toLowerCase();
             const c1 = (cols[1] || '').toLowerCase();
-            if (c0.includes('nama') || c0 === 'name' || c1.includes('email')) {
+            if (c0.includes('nama') || c0 === 'name' || c1.includes('nip') || c1.includes('email') || c1 === 'id') {
               continue;
             }
           }
@@ -918,21 +1051,21 @@ export function createApiRouter(): express.Router {
             errors.push({
               lineNumber,
               raw: line,
-              reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, Email).',
+              reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, NIP / ID Login).',
             });
             continue;
           }
 
           const name = cols[0].trim();
-          const email = cols[1].trim().toLowerCase();
+          const nip = normalizeTeacherNip(cols[1]);
           const rawRole = (cols[2] || 'TEACHER').trim().toUpperCase();
           const rawPass = (cols[3] || '').trim();
 
-          if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          if (!name || !isValidTeacherNip(nip)) {
             errors.push({
               lineNumber,
               raw: line,
-              reason: 'Nama lengkap atau format email tidak valid.',
+              reason: 'Nama lengkap atau format NIP / ID Login (2–64 karakter tanpa spasi) tidak valid.',
             });
             continue;
           }
@@ -957,16 +1090,16 @@ export function createApiRouter(): express.Router {
             continue;
           }
 
-          const existing = findStmt.get(email) as
-            | { id: number; name: string; email: string; role: 'TEACHER' | 'ADMIN' }
+          const existing = findStmt.get(nip) as
+            | { id: number; name: string; nip: string; role: 'TEACHER' | 'ADMIN' }
             | undefined;
 
           if (existing && !updateExisting) {
             skipped.push({
               lineNumber,
-              email,
+              nip,
               name,
-              reason: 'Email sudah terdaftar (lewati duplikat).',
+              reason: 'NIP / ID Login sudah terdaftar (lewati duplikat).',
             });
             continue;
           }
@@ -988,12 +1121,12 @@ export function createApiRouter(): express.Router {
 
             if (rawPass) {
               updateWithPassStmt.run(name, role, hashSecret(rawPass), existing.id);
-              importedCredentials.push({ name, email, role, password: rawPass, action: 'UPDATED' });
+              importedCredentials.push({ name, nip, role, password: rawPass, action: 'UPDATED' });
             } else {
               updateInfoStmt.run(name, role, existing.id);
               importedCredentials.push({
                 name,
-                email,
+                nip,
                 role,
                 password: 'Tetap (Tersimpan)',
                 action: 'UPDATED',
@@ -1001,8 +1134,8 @@ export function createApiRouter(): express.Router {
             }
           } else {
             const plainPass = rawPass || generateTeacherPassword(8);
-            insertStmt.run(name, email, hashSecret(plainPass), role);
-            importedCredentials.push({ name, email, role, password: plainPass, action: 'CREATED' });
+            insertStmt.run(name, nip, hashSecret(plainPass), role);
+            importedCredentials.push({ name, nip, role, password: plainPass, action: 'CREATED' });
           }
         }
 
@@ -1036,6 +1169,8 @@ export function createApiRouter(): express.Router {
     const rows = db
       .prepare(`
         SELECT ep.*, s.name AS subject_name, s.code AS subject_code, c.name AS class_name,
+               t_owner.name AS teacher_name,
+               t_proctor.name AS proctor_name,
                (SELECT COUNT(*) FROM questions q WHERE q.package_id = ep.id) AS question_count,
                (SELECT COUNT(*) FROM students st WHERE st.class_id = ep.class_id) AS class_student_count,
                (SELECT COUNT(*) FROM exam_sessions es WHERE es.package_id = ep.id AND es.status = 'IN_PROGRESS') AS active_count,
@@ -1044,21 +1179,34 @@ export function createApiRouter(): express.Router {
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
-        WHERE (? = 'ADMIN' OR ep.teacher_id = ?)
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
+        WHERE (? = 'ADMIN' OR ep.teacher_id = ? OR ep.proctor_id = ?)
         ORDER BY ep.is_active DESC, ep.id DESC
       `)
-      .all(teacher.role, teacher.teacherId);
+      .all(teacher.role, teacher.teacherId, teacher.teacherId) as PackageRow[];
 
-    res.json({ packages: rows });
+    const packages = rows.map((row) => ({
+      ...row,
+      access_role: getPackageAccess(row, teacher),
+    }));
+
+    res.json({ packages });
   });
 
   router.post('/packages', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const teacherId = req.teacher!.teacherId;
+    const isAdmin = req.teacher!.role === 'ADMIN';
     const {
       title,
       subjectId,
       classId,
+      classIds,
       className,
+      examDate = '',
+      kkm = 75,
+      proctorId,
+      proctorsByClass,
       durationMinutes = 60,
       maxViolations = 3,
       shuffleQuestions = true,
@@ -1070,7 +1218,12 @@ export function createApiRouter(): express.Router {
       title?: string;
       subjectId?: number;
       classId?: number;
+      classIds?: number[];
       className?: string;
+      examDate?: string;
+      kkm?: number;
+      proctorId?: number | null;
+      proctorsByClass?: Record<string, number | null>;
       durationMinutes?: number;
       maxViolations?: number;
       shuffleQuestions?: boolean;
@@ -1080,24 +1233,64 @@ export function createApiRouter(): express.Router {
       cloneFromPackageId?: number;
     };
 
-    if (!title?.trim() || !subjectId || (!classId && !className?.trim())) {
-      res.status(400).json({ error: 'Judul paket, mata pelajaran, dan kelas wajib diisi.' });
+    const hasClassIds = Array.isArray(classIds) && classIds.filter((id) => Number(id) > 0).length > 0;
+    if (!title?.trim() || !subjectId || (!hasClassIds && !classId && !className?.trim())) {
+      res.status(400).json({ error: 'Judul paket, mata pelajaran, dan minimal satu kelas wajib diisi.' });
       return;
     }
 
-    let resolvedClassId = classId ? Number(classId) : 0;
-    if (!resolvedClassId && className?.trim()) {
+    const hasNonAdminProctorAttempt =
+      !isAdmin &&
+      ((proctorId !== undefined && proctorId !== null) ||
+        (proctorsByClass && Object.values(proctorsByClass).some((v) => v !== null && v !== undefined)));
+    if (hasNonAdminProctorAttempt) {
+      res.status(403).json({ error: 'Hanya Admin Sekolah yang dapat menentukan Guru Pengawas.' });
+      return;
+    }
+
+    const targetClassIds: number[] = [];
+    if (hasClassIds) {
+      for (const cid of classIds!) {
+        const num = Number(cid);
+        if (Number.isFinite(num) && num > 0 && !targetClassIds.includes(num)) {
+          targetClassIds.push(num);
+        }
+      }
+    } else if (classId) {
+      targetClassIds.push(Number(classId));
+    } else if (className?.trim()) {
       const cleanClassName = className.replace(/^kelas\s+/i, '').trim().toUpperCase();
       const foundClass = db
         .prepare('SELECT id FROM classes WHERE LOWER(name) = LOWER(?)')
         .get(cleanClassName) as { id: number } | undefined;
       if (foundClass) {
-        resolvedClassId = foundClass.id;
+        targetClassIds.push(foundClass.id);
+      } else if (!isAdmin) {
+        res.status(403).json({
+          error: `Akses ditolak. Kelas "${cleanClassName}" tidak ditemukan atau bukan bagian dari penugasan mengajar Anda.`,
+        });
+        return;
       } else {
         const matchGrade = cleanClassName.match(/^(\d+)/);
         const gradeLevel = matchGrade ? Number(matchGrade[1]) : 8;
         const clsRes = db.prepare('INSERT INTO classes (name, grade_level) VALUES (?, ?)').run(cleanClassName, gradeLevel);
-        resolvedClassId = Number(clsRes.lastInsertRowid);
+        targetClassIds.push(Number(clsRes.lastInsertRowid));
+      }
+    }
+
+    if (targetClassIds.length === 0) {
+      res.status(400).json({ error: 'Kelas target tidak valid.' });
+      return;
+    }
+
+    if (!isAdmin) {
+      const scope = getTeacherAssignmentScope(teacherId);
+      const unauthorizedClass = targetClassIds.find((cid) => !scope.pairs.has(`${Number(subjectId)}:${cid}`));
+      if (unauthorizedClass !== undefined) {
+        res.status(403).json({
+          error: 'Akses ditolak. Anda hanya dapat membuat paket ujian sesuai penugasan mata pelajaran dan kelas Anda.',
+        });
+        return;
       }
     }
 
@@ -1107,59 +1300,127 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    const token = cleanedInitialToken || generateExamToken();
-    const result = db
-      .prepare(`
-        INSERT INTO exam_packages (teacher_id, subject_id, class_id, title, duration_minutes, is_active, max_violations, shuffle_questions, shuffle_options, current_token)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        teacherId,
-        Number(subjectId),
-        resolvedClassId,
-        title.trim(),
-        Math.max(5, Math.min(300, Number(durationMinutes) || 60)),
-        isActive ? 1 : 0,
-        Math.max(1, Math.min(20, Number(maxViolations) || 3)),
-        shuffleQuestions ? 1 : 0,
-        shuffleOptions ? 1 : 0,
-        token
-      );
+    let sourceQuestions: Array<{
+      question_text: string;
+      question_type: string;
+      options_json: string;
+      correct_option: string;
+      points: number;
+    }> = [];
 
-    const newPackageId = Number(result.lastInsertRowid);
-
-    // Optional: clone questions from another package (great when switching/copying UAS 8A -> 8B)
     if (cloneFromPackageId) {
-      const sourceQuestions = db
-        .prepare('SELECT question_text, question_type, options_json, correct_option, points FROM questions WHERE package_id = ?')
-        .all(Number(cloneFromPackageId)) as Array<{
-        question_text: string;
-        question_type: string;
-        options_json: string;
-        correct_option: string;
-        points: number;
-      }>;
-
-      const insertQ = db.prepare(`
-        INSERT INTO questions (subject_id, package_id, question_text, question_type, options_json, correct_option, points)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const q of sourceQuestions) {
-        insertQ.run(Number(subjectId), newPackageId, q.question_text, q.question_type, q.options_json, q.correct_option, q.points);
+      const sourcePkg = db.prepare('SELECT id, teacher_id, proctor_id FROM exam_packages WHERE id = ?').get(Number(cloneFromPackageId)) as
+        | { id: number; teacher_id: number; proctor_id: number | null }
+        | undefined;
+      if (!sourcePkg) {
+        res.status(404).json({ error: 'Paket sumber salinan soal tidak ditemukan.' });
+        return;
       }
+      const sourceAccess = getPackageAccess(sourcePkg, req.teacher!);
+      if (sourceAccess !== 'ADMIN' && sourceAccess !== 'OWNER') {
+        res.status(403).json({ error: 'Anda tidak memiliki akses menyalin soal dari paket tersebut.' });
+        return;
+      }
+      sourceQuestions = db
+        .prepare('SELECT question_text, question_type, options_json, correct_option, points FROM questions WHERE package_id = ?')
+        .all(Number(cloneFromPackageId)) as typeof sourceQuestions;
     }
 
-    const created = db
+    const scheduleGroup = targetClassIds.length > 1 ? `grp-${crypto.randomBytes(6).toString('hex')}` : '';
+    const cleanExamDate = (examDate || '').trim();
+    const cleanKkm = Math.max(0, Math.min(100, Math.round(Number(kkm) || 75)));
+    const cleanDuration = Math.max(5, Math.min(300, Number(durationMinutes) || 60));
+    const cleanMaxViolations = Math.max(1, Math.min(20, Number(maxViolations) || 3));
+    const baseTitle = title.trim();
+
+    const classRows = db
+      .prepare(`SELECT id, name FROM classes WHERE id IN (${targetClassIds.map(() => '?').join(',')})`)
+      .all(...targetClassIds) as Array<{ id: number; name: string }>;
+    const classNameMap = new Map(classRows.map((c) => [c.id, c.name]));
+
+    const insertPkgStmt = db.prepare(`
+      INSERT INTO exam_packages (teacher_id, proctor_id, subject_id, class_id, title, exam_date, kkm, schedule_group, duration_minutes, is_active, max_violations, shuffle_questions, shuffle_options, current_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertQStmt = db.prepare(`
+      INSERT INTO questions (subject_id, package_id, question_text, question_type, options_json, correct_option, points)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const createdIds: number[] = [];
+    const runCreate = db.transaction(() => {
+      targetClassIds.forEach((cid, idx) => {
+        const clsName = classNameMap.get(cid) || String(cid);
+        const resolvedTitle =
+          targetClassIds.length > 1
+            ? baseTitle.toLowerCase().includes(clsName.toLowerCase())
+              ? baseTitle
+              : `${baseTitle} — Kelas ${clsName}`
+            : baseTitle;
+
+        const rawProctor = isAdmin
+          ? proctorsByClass && Object.prototype.hasOwnProperty.call(proctorsByClass, String(cid))
+            ? proctorsByClass[String(cid)]
+            : proctorId ?? null
+          : null;
+        const resolvedProctorId = rawProctor ? Number(rawProctor) : null;
+        const token = idx === 0 && cleanedInitialToken ? cleanedInitialToken : generateExamToken();
+
+        const info = insertPkgStmt.run(
+          teacherId,
+          resolvedProctorId,
+          Number(subjectId),
+          cid,
+          resolvedTitle,
+          cleanExamDate,
+          cleanKkm,
+          scheduleGroup,
+          cleanDuration,
+          isActive ? 1 : 0,
+          cleanMaxViolations,
+          shuffleQuestions ? 1 : 0,
+          shuffleOptions ? 1 : 0,
+          token
+        );
+        const newPackageId = Number(info.lastInsertRowid);
+        createdIds.push(newPackageId);
+
+        for (const q of sourceQuestions) {
+          insertQStmt.run(
+            Number(subjectId),
+            newPackageId,
+            q.question_text,
+            q.question_type,
+            q.options_json,
+            q.correct_option,
+            q.points
+          );
+        }
+      });
+    });
+
+    runCreate();
+
+    const createdPackages = db
       .prepare(`
-        SELECT ep.*, s.name AS subject_name, s.code AS subject_code, c.name AS class_name
+        SELECT ep.*, s.name AS subject_name, s.code AS subject_code, c.name AS class_name,
+               t_owner.name AS teacher_name, t_proctor.name AS proctor_name
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
-        WHERE ep.id = ?
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
+        WHERE ep.id IN (${createdIds.map(() => '?').join(',')})
+        ORDER BY ep.id ASC
       `)
-      .get(newPackageId);
+      .all(...createdIds) as PackageRow[];
 
-    res.status(201).json({ package: created });
+    const enriched = createdPackages.map((row) => ({
+      ...row,
+      access_role: getPackageAccess(row, req.teacher!),
+    }));
+
+    res.status(201).json({ package: enriched[0], packages: enriched });
   });
 
   router.put('/packages/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
@@ -1168,6 +1429,9 @@ export function createApiRouter(): express.Router {
       title,
       subjectId,
       classId,
+      proctorId,
+      examDate,
+      kkm,
       durationMinutes,
       maxViolations,
       shuffleQuestions,
@@ -1177,6 +1441,9 @@ export function createApiRouter(): express.Router {
       title?: string;
       subjectId?: number;
       classId?: number;
+      proctorId?: number | null;
+      examDate?: string;
+      kkm?: number;
       durationMinutes?: number;
       maxViolations?: number;
       shuffleQuestions?: boolean;
@@ -1190,18 +1457,55 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    if (req.teacher!.role !== 'ADMIN' && existing.teacher_id !== req.teacher!.teacherId) {
+    const access = getPackageAccess(existing, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
       res.status(403).json({ error: 'Anda tidak memiliki akses untuk mengubah paket ujian ini.' });
       return;
     }
 
+    if (proctorId !== undefined && req.teacher!.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Hanya Admin Sekolah yang dapat menentukan Guru Pengawas.' });
+      return;
+    }
+
+    let nextProctorId = existing.proctor_id;
+    if (proctorId !== undefined && req.teacher!.role === 'ADMIN') {
+      if (proctorId === null || Number(proctorId) === 0) {
+        nextProctorId = null;
+      } else {
+        const foundProctor = db.prepare('SELECT id FROM teachers WHERE id = ?').get(Number(proctorId)) as
+          | { id: number }
+          | undefined;
+        if (!foundProctor) {
+          res.status(400).json({ error: 'Akun Guru Pengawas tidak ditemukan.' });
+          return;
+        }
+        nextProctorId = foundProctor.id;
+      }
+    }
+
     const nextSubjectId = subjectId ? Number(subjectId) : existing.subject_id;
+    const nextClassId = classId ? Number(classId) : existing.class_id;
+    if (req.teacher!.role !== 'ADMIN') {
+      const scope = getTeacherAssignmentScope(req.teacher!.teacherId);
+      if (!scope.pairs.has(`${nextSubjectId}:${nextClassId}`)) {
+        res.status(403).json({
+          error: 'Akses ditolak. Mata pelajaran dan kelas paket ujian harus sesuai penugasan Anda.',
+        });
+        return;
+      }
+    }
+    const nextExamDate = examDate !== undefined ? examDate.trim() : existing.exam_date;
+    const nextKkm = kkm !== undefined ? Math.max(0, Math.min(100, Math.round(Number(kkm)))) : existing.kkm;
 
     db.prepare(`
       UPDATE exam_packages
       SET title = ?,
           subject_id = ?,
           class_id = ?,
+          proctor_id = ?,
+          exam_date = ?,
+          kkm = ?,
           duration_minutes = ?,
           max_violations = ?,
           shuffle_questions = ?,
@@ -1211,7 +1515,10 @@ export function createApiRouter(): express.Router {
     `).run(
       title?.trim() || existing.title,
       nextSubjectId,
-      classId ? Number(classId) : existing.class_id,
+      nextClassId,
+      nextProctorId,
+      nextExamDate,
+      nextKkm,
       durationMinutes ? Math.max(5, Math.min(300, Number(durationMinutes))) : existing.duration_minutes,
       maxViolations ? Math.max(1, Math.min(20, Number(maxViolations))) : existing.max_violations,
       typeof shuffleQuestions === 'boolean' ? (shuffleQuestions ? 1 : 0) : existing.shuffle_questions,
@@ -1229,14 +1536,15 @@ export function createApiRouter(): express.Router {
 
   router.delete('/packages/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
-    const existing = db.prepare('SELECT id, teacher_id FROM exam_packages WHERE id = ?').get(pkgId) as
-      | { id: number; teacher_id: number }
+    const existing = db.prepare('SELECT id, teacher_id, proctor_id FROM exam_packages WHERE id = ?').get(pkgId) as
+      | { id: number; teacher_id: number; proctor_id: number | null }
       | undefined;
     if (!existing) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
       return;
     }
-    if (req.teacher!.role !== 'ADMIN' && existing.teacher_id !== req.teacher!.teacherId) {
+    const access = getPackageAccess(existing, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
       res.status(403).json({ error: 'Anda tidak memiliki akses untuk menghapus paket ujian ini.' });
       return;
     }
@@ -1249,6 +1557,12 @@ export function createApiRouter(): express.Router {
     const pkg = db.prepare('SELECT * FROM exam_packages WHERE id = ?').get(pkgId) as PackageRow | undefined;
     if (!pkg) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Hanya Admin atau Guru Mapel pembuat paket yang dapat mengaktifkan/menonaktifkan ujian.' });
       return;
     }
 
@@ -1270,6 +1584,12 @@ export function createApiRouter(): express.Router {
     const pkg = db.prepare('SELECT * FROM exam_packages WHERE id = ?').get(pkgId) as PackageRow | undefined;
     if (!pkg) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Hanya Admin atau Guru Mapel pembuat paket yang dapat merotasi token.' });
       return;
     }
 
@@ -1306,16 +1626,25 @@ export function createApiRouter(): express.Router {
     const pkgId = Number(req.params.id);
     const pkg = db
       .prepare(`
-        SELECT ep.*, s.name AS subject_name, s.code AS subject_code, c.name AS class_name
+        SELECT ep.*, s.name AS subject_name, s.code AS subject_code, c.name AS class_name,
+               t_owner.name AS teacher_name, t_proctor.name AS proctor_name
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
         WHERE ep.id = ?
       `)
       .get(pkgId) as PackageRow | undefined;
 
     if (!pkg) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access === 'NONE') {
+      res.status(403).json({ error: 'Anda tidak memiliki akses melihat QR paket ujian ini.' });
       return;
     }
 
@@ -1350,6 +1679,9 @@ export function createApiRouter(): express.Router {
       title: pkg.title,
       className: pkg.class_name,
       subjectName: pkg.subject_name,
+      teacherName: pkg.teacher_name,
+      proctorName: pkg.proctor_name,
+      examDate: pkg.exam_date,
       isActive: pkg.is_active === 1,
       currentToken: pkg.current_token,
       studentExamUrl,
@@ -1360,10 +1692,38 @@ export function createApiRouter(): express.Router {
   });
 
   // ==========================
-  // 3. QUESTION BANK CRUD (TEACHER ONLY)
+  // 3. QUESTION BANK CRUD (OWNER / ADMIN ONLY — PROCTOR DENIED)
   // ==========================
+  function getEligibleSyncSiblings(pkgId: number, scheduleGroup: string): Array<{ id: number; subject_id: number }> {
+    if (!scheduleGroup) return [];
+    return db
+      .prepare(`
+        SELECT ep.id, ep.subject_id
+        FROM exam_packages ep
+        WHERE ep.schedule_group = ?
+          AND ep.id != ?
+          AND NOT EXISTS (SELECT 1 FROM exam_sessions es WHERE es.package_id = ep.id)
+      `)
+      .all(scheduleGroup, pkgId) as Array<{ id: number; subject_id: number }>;
+  }
+
   router.get('/packages/:id/questions', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
+    const pkg = db.prepare('SELECT id, teacher_id, proctor_id FROM exam_packages WHERE id = ?').get(pkgId) as
+      | { id: number; teacher_id: number; proctor_id: number | null }
+      | undefined;
+
+    if (!pkg) {
+      res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan membuka atau mengubah Bank Soal.' });
+      return;
+    }
+
     const questions = db
       .prepare('SELECT * FROM questions WHERE package_id = ? ORDER BY id ASC')
       .all(pkgId) as QuestionRow[];
@@ -1378,8 +1738,8 @@ export function createApiRouter(): express.Router {
 
   router.post('/packages/:id/questions', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
-    const pkg = db.prepare('SELECT id, subject_id FROM exam_packages WHERE id = ?').get(pkgId) as
-      | { id: number; subject_id: number }
+    const pkg = db.prepare('SELECT id, subject_id, teacher_id, proctor_id, schedule_group FROM exam_packages WHERE id = ?').get(pkgId) as
+      | { id: number; subject_id: number; teacher_id: number; proctor_id: number | null; schedule_group: string }
       | undefined;
 
     if (!pkg) {
@@ -1387,11 +1747,18 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    const { questionText, options, correctOption, points = 20 } = req.body as {
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan menambah soal.' });
+      return;
+    }
+
+    const { questionText, options, correctOption, points = 20, syncSiblings = true } = req.body as {
       questionText?: string;
       options?: OptionItem[];
       correctOption?: string;
       points?: number;
+      syncSiblings?: boolean;
     };
 
     if (!questionText?.trim() || !Array.isArray(options) || options.length < 2 || !correctOption) {
@@ -1399,27 +1766,34 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    const info = db
-      .prepare(`
-        INSERT INTO questions (subject_id, package_id, question_text, question_type, options_json, correct_option, points)
-        VALUES (?, ?, ?, 'MULTIPLE_CHOICE', ?, ?, ?)
-      `)
-      .run(
-        pkg.subject_id,
-        pkgId,
-        questionText.trim(),
-        JSON.stringify(options),
-        correctOption.trim().toUpperCase(),
-        Math.max(1, Number(points) || 10)
-      );
+    const cleanQText = questionText.trim();
+    const optionsJson = JSON.stringify(options);
+    const cleanCorrect = correctOption.trim().toUpperCase();
+    const cleanPoints = Math.max(1, Number(points) || 10);
 
-    res.status(201).json({ id: Number(info.lastInsertRowid) });
+    const insertQStmt = db.prepare(`
+      INSERT INTO questions (subject_id, package_id, question_text, question_type, options_json, correct_option, points)
+      VALUES (?, ?, ?, 'MULTIPLE_CHOICE', ?, ?, ?)
+    `);
+
+    const info = insertQStmt.run(pkg.subject_id, pkgId, cleanQText, optionsJson, cleanCorrect, cleanPoints);
+
+    let syncedPackageCount = 0;
+    if (syncSiblings && pkg.schedule_group) {
+      const siblings = getEligibleSyncSiblings(pkgId, pkg.schedule_group);
+      for (const sib of siblings) {
+        insertQStmt.run(sib.subject_id, sib.id, cleanQText, optionsJson, cleanCorrect, cleanPoints);
+        syncedPackageCount++;
+      }
+    }
+
+    res.status(201).json({ id: Number(info.lastInsertRowid), syncedPackageCount });
   });
 
   router.post('/packages/:id/questions/import', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const pkgId = Number(req.params.id);
-    const pkg = db.prepare('SELECT id, subject_id FROM exam_packages WHERE id = ?').get(pkgId) as
-      | { id: number; subject_id: number }
+    const pkg = db.prepare('SELECT id, subject_id, teacher_id, proctor_id, schedule_group FROM exam_packages WHERE id = ?').get(pkgId) as
+      | { id: number; subject_id: number; teacher_id: number; proctor_id: number | null; schedule_group: string }
       | undefined;
 
     if (!pkg) {
@@ -1427,9 +1801,16 @@ export function createApiRouter(): express.Router {
       return;
     }
 
-    const { rawText, replaceExisting = false } = req.body as {
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan mengimpor soal.' });
+      return;
+    }
+
+    const { rawText, replaceExisting = false, syncSiblings = true } = req.body as {
       rawText?: string;
       replaceExisting?: boolean;
+      syncSiblings?: boolean;
     };
 
     if (!rawText || !rawText.trim()) {
@@ -1481,8 +1862,79 @@ export function createApiRouter(): express.Router {
     }
 
     const errors: Array<{ lineNumber: number; raw: string; reason: string }> = [];
-    let createdCount = 0;
+    const parsedRows: Array<{
+      questionText: string;
+      optionsJson: string;
+      correctOption: string;
+      points: number;
+    }> = [];
     let totalRows = 0;
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const lineNumber = idx + 1;
+      const line = lines[idx];
+      const cols = splitDelimitedLine(line);
+
+      if (idx === 0) {
+        const c0 = (cols[0] || '').toLowerCase();
+        const c5 = (cols[5] || '').toLowerCase();
+        if (c0.includes('pertanyaan') || c0 === 'soal' || c5.includes('kunci')) {
+          continue;
+        }
+      }
+
+      totalRows++;
+
+      if (cols.length < 6) {
+        errors.push({
+          lineNumber,
+          raw: line,
+          reason: 'Minimal harus memiliki 6 kolom (Pertanyaan, Opsi A, Opsi B, Opsi C, Opsi D, Kunci Jawaban).',
+        });
+        continue;
+      }
+
+      const qText = cols[0].trim();
+      const optA = cols[1].trim();
+      const optB = cols[2].trim();
+      const optC = cols[3].trim();
+      const optD = cols[4].trim();
+      const correctKey = cols[5].trim().toUpperCase();
+      const rawPoints = (cols[6] || '').trim();
+      const points = rawPoints ? Math.max(1, Math.min(100, Number(rawPoints) || 20)) : 20;
+
+      if (!qText || !optA || !optB || !optC || !optD) {
+        errors.push({
+          lineNumber,
+          raw: line,
+          reason: 'Pertanyaan dan seluruh Opsi A–D tidak boleh kosong.',
+        });
+        continue;
+      }
+
+      if (!['A', 'B', 'C', 'D'].includes(correctKey)) {
+        errors.push({
+          lineNumber,
+          raw: line,
+          reason: 'Kunci jawaban harus berupa huruf A, B, C, atau D.',
+        });
+        continue;
+      }
+
+      const options: OptionItem[] = [
+        { key: 'A', text: optA },
+        { key: 'B', text: optB },
+        { key: 'C', text: optC },
+        { key: 'D', text: optD },
+      ];
+
+      parsedRows.push({
+        questionText: qText,
+        optionsJson: JSON.stringify(options),
+        correctOption: correctKey,
+        points,
+      });
+    }
 
     const deleteOldStmt = db.prepare('DELETE FROM questions WHERE package_id = ?');
     const insertQStmt = db.prepare(`
@@ -1490,71 +1942,21 @@ export function createApiRouter(): express.Router {
       VALUES (?, ?, ?, 'MULTIPLE_CHOICE', ?, ?, ?)
     `);
 
+    const eligibleSiblings = syncSiblings && pkg.schedule_group ? getEligibleSyncSiblings(pkgId, pkg.schedule_group) : [];
+
     const runImport = db.transaction(() => {
       if (replaceExisting) {
         deleteOldStmt.run(pkgId);
+        for (const sib of eligibleSiblings) {
+          deleteOldStmt.run(sib.id);
+        }
       }
 
-      for (let idx = 0; idx < lines.length; idx++) {
-        const lineNumber = idx + 1;
-        const line = lines[idx];
-        const cols = splitDelimitedLine(line);
-
-        if (idx === 0) {
-          const c0 = (cols[0] || '').toLowerCase();
-          const c5 = (cols[5] || '').toLowerCase();
-          if (c0.includes('pertanyaan') || c0 === 'soal' || c5.includes('kunci')) {
-            continue;
-          }
+      for (const row of parsedRows) {
+        insertQStmt.run(pkg.subject_id, pkgId, row.questionText, row.optionsJson, row.correctOption, row.points);
+        for (const sib of eligibleSiblings) {
+          insertQStmt.run(sib.subject_id, sib.id, row.questionText, row.optionsJson, row.correctOption, row.points);
         }
-
-        totalRows++;
-
-        if (cols.length < 6) {
-          errors.push({
-            lineNumber,
-            raw: line,
-            reason: 'Minimal harus memiliki 6 kolom (Pertanyaan, Opsi A, Opsi B, Opsi C, Opsi D, Kunci Jawaban).',
-          });
-          continue;
-        }
-
-        const qText = cols[0].trim();
-        const optA = cols[1].trim();
-        const optB = cols[2].trim();
-        const optC = cols[3].trim();
-        const optD = cols[4].trim();
-        const correctKey = cols[5].trim().toUpperCase();
-        const rawPoints = (cols[6] || '').trim();
-        const points = rawPoints ? Math.max(1, Math.min(100, Number(rawPoints) || 20)) : 20;
-
-        if (!qText || !optA || !optB || !optC || !optD) {
-          errors.push({
-            lineNumber,
-            raw: line,
-            reason: 'Pertanyaan dan seluruh Opsi A–D tidak boleh kosong.',
-          });
-          continue;
-        }
-
-        if (!['A', 'B', 'C', 'D'].includes(correctKey)) {
-          errors.push({
-            lineNumber,
-            raw: line,
-            reason: 'Kunci jawaban harus berupa huruf A, B, C, atau D.',
-          });
-          continue;
-        }
-
-        const options: OptionItem[] = [
-          { key: 'A', text: optA },
-          { key: 'B', text: optB },
-          { key: 'C', text: optC },
-          { key: 'D', text: optD },
-        ];
-
-        insertQStmt.run(pkg.subject_id, pkgId, qText, JSON.stringify(options), correctKey, points);
-        createdCount++;
       }
     });
 
@@ -1563,8 +1965,9 @@ export function createApiRouter(): express.Router {
     res.json({
       summary: {
         totalRows,
-        createdCount,
+        createdCount: parsedRows.length,
         errorCount: errors.length,
+        syncedPackageCount: eligibleSiblings.length,
       },
       errors,
     });
@@ -1572,11 +1975,12 @@ export function createApiRouter(): express.Router {
 
   router.put('/questions/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const qId = Number(req.params.id);
-    const { questionText, options, correctOption, points } = req.body as {
+    const { questionText, options, correctOption, points, syncSiblings = true } = req.body as {
       questionText?: string;
       options?: OptionItem[];
       correctOption?: string;
       points?: number;
+      syncSiblings?: boolean;
     };
 
     const existing = db.prepare('SELECT * FROM questions WHERE id = ?').get(qId) as QuestionRow | undefined;
@@ -1585,28 +1989,81 @@ export function createApiRouter(): express.Router {
       return;
     }
 
+    const pkg = db.prepare('SELECT id, teacher_id, proctor_id, schedule_group FROM exam_packages WHERE id = ?').get(existing.package_id) as
+      | { id: number; teacher_id: number; proctor_id: number | null; schedule_group: string }
+      | undefined;
+
+    if (!pkg) {
+      res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan mengubah soal.' });
+      return;
+    }
+
+    const nextText = questionText?.trim() || existing.question_text;
+    const nextOpts = Array.isArray(options) ? JSON.stringify(options) : existing.options_json;
+    const nextCorrect = correctOption ? correctOption.trim().toUpperCase() : existing.correct_option;
+    const nextPoints = points ? Math.max(1, Number(points)) : existing.points;
+
     db.prepare(`
       UPDATE questions
       SET question_text = ?, options_json = ?, correct_option = ?, points = ?
       WHERE id = ?
-    `).run(
-      questionText?.trim() || existing.question_text,
-      Array.isArray(options) ? JSON.stringify(options) : existing.options_json,
-      correctOption ? correctOption.trim().toUpperCase() : existing.correct_option,
-      points ? Math.max(1, Number(points)) : existing.points,
-      qId
-    );
+    `).run(nextText, nextOpts, nextCorrect, nextPoints, qId);
+
+    if (syncSiblings && pkg.schedule_group) {
+      const siblings = getEligibleSyncSiblings(pkg.id, pkg.schedule_group);
+      const updateSibStmt = db.prepare(`
+        UPDATE questions
+        SET question_text = ?, options_json = ?, correct_option = ?, points = ?
+        WHERE package_id = ? AND question_text = ?
+      `);
+      for (const sib of siblings) {
+        updateSibStmt.run(nextText, nextOpts, nextCorrect, nextPoints, sib.id, existing.question_text);
+      }
+    }
 
     res.json({ success: true });
   });
 
   router.delete('/questions/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const qId = Number(req.params.id);
+    const existing = db.prepare('SELECT * FROM questions WHERE id = ?').get(qId) as QuestionRow | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Soal tidak ditemukan.' });
+      return;
+    }
+
+    const pkg = db.prepare('SELECT id, teacher_id, proctor_id, schedule_group FROM exam_packages WHERE id = ?').get(existing.package_id) as
+      | { id: number; teacher_id: number; proctor_id: number | null; schedule_group: string }
+      | undefined;
+
+    if (pkg) {
+      const access = getPackageAccess(pkg, req.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan menghapus soal.' });
+        return;
+      }
+    }
+
     const info = db.prepare('DELETE FROM questions WHERE id = ?').run(qId);
     if (info.changes === 0) {
       res.status(404).json({ error: 'Soal tidak ditemukan.' });
       return;
     }
+
+    if (pkg?.schedule_group) {
+      const siblings = getEligibleSyncSiblings(pkg.id, pkg.schedule_group);
+      const delSibStmt = db.prepare('DELETE FROM questions WHERE package_id = ? AND question_text = ?');
+      for (const sib of siblings) {
+        delSibStmt.run(sib.id, existing.question_text);
+      }
+    }
+
     res.json({ success: true });
   });
 
@@ -1614,16 +2071,11 @@ export function createApiRouter(): express.Router {
   // 4. STUDENTS & SEMESTER PIN MANAGEMENT
   // ==========================
   router.get('/students', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
+    const teacher = req.teacher!;
+    const isAdmin = teacher.role === 'ADMIN';
     const classId = req.query.classId ? Number(req.query.classId) : null;
-    const rows = db
-      .prepare(`
-        SELECT st.id, st.nis, st.name, st.class_id, st.pin_encrypted, st.pin_updated_at, c.name AS class_name
-        FROM students st
-        JOIN classes c ON c.id = st.class_id
-        WHERE (? IS NULL OR st.class_id = ?)
-        ORDER BY c.name ASC, st.nis ASC
-      `)
-      .all(classId, classId) as Array<{
+
+    let rows: Array<{
       id: number;
       nis: string;
       name: string;
@@ -1632,6 +2084,51 @@ export function createApiRouter(): express.Router {
       pin_updated_at: string;
       class_name: string;
     }>;
+
+    if (!isAdmin) {
+      const scope = getTeacherAssignmentScope(teacher.teacherId);
+      if (scope.classIds.length === 0) {
+        res.json({ students: [] });
+        return;
+      }
+      if (classId !== null && Number.isFinite(classId)) {
+        if (!scope.classIds.includes(classId)) {
+          res.status(403).json({
+            error: 'Akses ditolak. Anda hanya dapat melihat data siswa pada kelas penugasan Anda.',
+          });
+          return;
+        }
+        rows = db
+          .prepare(`
+            SELECT st.id, st.nis, st.name, st.class_id, st.pin_encrypted, st.pin_updated_at, c.name AS class_name
+            FROM students st
+            JOIN classes c ON c.id = st.class_id
+            WHERE st.class_id = ?
+            ORDER BY c.name ASC, st.nis ASC
+          `)
+          .all(classId) as typeof rows;
+      } else {
+        rows = db
+          .prepare(`
+            SELECT st.id, st.nis, st.name, st.class_id, st.pin_encrypted, st.pin_updated_at, c.name AS class_name
+            FROM students st
+            JOIN classes c ON c.id = st.class_id
+            WHERE st.class_id IN (${scope.classIds.map(() => '?').join(',')})
+            ORDER BY c.name ASC, st.nis ASC
+          `)
+          .all(...scope.classIds) as typeof rows;
+      }
+    } else {
+      rows = db
+        .prepare(`
+          SELECT st.id, st.nis, st.name, st.class_id, st.pin_encrypted, st.pin_updated_at, c.name AS class_name
+          FROM students st
+          JOIN classes c ON c.id = st.class_id
+          WHERE (? IS NULL OR st.class_id = ?)
+          ORDER BY c.name ASC, st.nis ASC
+        `)
+        .all(classId, classId) as typeof rows;
+    }
 
     const keyMaterial = getPinKeyMaterial();
     const students = rows.map((row) => ({
@@ -1659,6 +2156,16 @@ export function createApiRouter(): express.Router {
     if (!nis?.trim() || !name?.trim() || !classId) {
       res.status(400).json({ error: 'NIS, nama siswa, dan kelas wajib diisi.' });
       return;
+    }
+
+    if (!isAdmin) {
+      const scope = getTeacherAssignmentScope(req.teacher!.teacherId);
+      if (!scope.classIds.includes(Number(classId))) {
+        res.status(403).json({
+          error: 'Akses ditolak. Anda hanya dapat menambahkan siswa ke kelas penugasan Anda.',
+        });
+        return;
+      }
     }
 
     const trimmedCustomPin = customPin?.trim() || '';
@@ -1700,7 +2207,9 @@ export function createApiRouter(): express.Router {
 
   router.put('/students/:id', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const studentId = Number(req.params.id);
-    const existing = db.prepare('SELECT id FROM students WHERE id = ?').get(studentId);
+    const existing = db.prepare('SELECT id, class_id FROM students WHERE id = ?').get(studentId) as
+      | { id: number; class_id: number }
+      | undefined;
     if (!existing) {
       res.status(404).json({ error: 'Siswa tidak ditemukan.' });
       return;
@@ -1719,6 +2228,16 @@ export function createApiRouter(): express.Router {
     if (!cleanNis || !cleanName || !Number.isFinite(cleanClassId) || cleanClassId <= 0) {
       res.status(400).json({ error: 'NIS, nama siswa, dan kelas wajib diisi.' });
       return;
+    }
+
+    if (req.teacher!.role !== 'ADMIN') {
+      const scope = getTeacherAssignmentScope(req.teacher!.teacherId);
+      if (!scope.classIds.includes(existing.class_id) || !scope.classIds.includes(cleanClassId)) {
+        res.status(403).json({
+          error: 'Akses ditolak. Anda hanya dapat mengubah data siswa pada kelas penugasan Anda.',
+        });
+        return;
+      }
     }
 
     const cls = db.prepare('SELECT id, name FROM classes WHERE id = ?').get(cleanClassId) as
@@ -1810,6 +2329,13 @@ export function createApiRouter(): express.Router {
 
   router.post('/students/import', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const isAdmin = req.teacher!.role === 'ADMIN';
+    const teacherScope = isAdmin ? null : getTeacherAssignmentScope(req.teacher!.teacherId);
+    if (teacherScope && teacherScope.classIds.length === 0) {
+      res.status(403).json({
+        error: 'Akun Anda belum memiliki penugasan kelas mengajar dari Admin Sekolah.',
+      });
+      return;
+    }
     const { rawText, updateExisting = false } = req.body as {
       rawText?: string;
       updateExisting?: boolean;
@@ -1876,7 +2402,7 @@ export function createApiRouter(): express.Router {
 
     const findClassStmt = db.prepare('SELECT id, name FROM classes WHERE LOWER(name) = LOWER(?)');
     const insertClassStmt = db.prepare('INSERT INTO classes (name, grade_level) VALUES (?, ?)');
-    const findStudentStmt = db.prepare('SELECT id, nis, name, pin_encrypted FROM students WHERE nis = ?');
+    const findStudentStmt = db.prepare('SELECT id, nis, name, class_id, pin_encrypted FROM students WHERE nis = ?');
     const insertStudentStmt = db.prepare(
       'INSERT INTO students (nis, name, class_id, pin_hash, pin_encrypted) VALUES (?, ?, ?, ?, ?)'
     );
@@ -1945,14 +2471,31 @@ export function createApiRouter(): express.Router {
 
         let classRow = findClassStmt.get(rawClass) as { id: number; name: string } | undefined;
         if (!classRow) {
+          if (!isAdmin) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: `Kelas "${rawClass}" tidak ditemukan atau bukan bagian dari penugasan mengajar Anda.`,
+            });
+            continue;
+          }
           const matchGrade = rawClass.match(/^(\d+)/);
           const gradeLevel = matchGrade ? Number(matchGrade[1]) : 8;
           const clsRes = insertClassStmt.run(rawClass.toUpperCase(), gradeLevel);
           classRow = { id: Number(clsRes.lastInsertRowid), name: rawClass.toUpperCase() };
         }
 
+        if (teacherScope && !teacherScope.classIds.includes(classRow.id)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: `Kelas "${classRow.name}" bukan bagian dari penugasan mengajar Anda.`,
+          });
+          continue;
+        }
+
         const existingStudent = findStudentStmt.get(nis) as
-          | { id: number; nis: string; name: string; pin_encrypted: string }
+          | { id: number; nis: string; name: string; class_id: number; pin_encrypted: string }
           | undefined;
         if (existingStudent && !updateExisting) {
           skipped.push({
@@ -1960,6 +2503,15 @@ export function createApiRouter(): express.Router {
             nis,
             name,
             reason: 'NIS sudah terdaftar (lewati duplikat).',
+          });
+          continue;
+        }
+
+        if (existingStudent && updateExisting && teacherScope && !teacherScope.classIds.includes(existingStudent.class_id)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: `Siswa NIS "${nis}" terdaftar di kelas di luar penugasan mengajar Anda.`,
           });
           continue;
         }
@@ -2034,10 +2586,13 @@ export function createApiRouter(): express.Router {
     const pkg = db
       .prepare(`
         SELECT ep.*, s.name AS subject_name, c.name AS class_name,
+               t_owner.name AS teacher_name, t_proctor.name AS proctor_name,
                (SELECT COUNT(*) FROM questions q WHERE q.package_id = ep.id) AS total_questions
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
         WHERE ep.id = ?
       `)
       .get(pkgId) as (PackageRow & { total_questions: number }) | undefined;
@@ -2046,6 +2601,13 @@ export function createApiRouter(): express.Router {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
       return;
     }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access === 'NONE') {
+      res.status(403).json({ error: 'Anda tidak memiliki akses memantau paket ujian ini.' });
+      return;
+    }
+    const isProctorOnly = access === 'PROCTOR';
 
     const now = Date.now();
     // Auto-expire overdue in-progress sessions
@@ -2127,8 +2689,8 @@ export function createApiRouter(): express.Router {
         totalQuestions: pkg.total_questions,
         violationCount: r.violation_count || 0,
         maxViolationsAllowed: pkg.max_violations + (r.unlock_bonus || 0),
-        score: r.score,
-        correctCount: r.correct_count,
+        score: isProctorOnly ? null : r.score,
+        correctCount: isProctorOnly ? null : r.correct_count,
       };
     });
 
@@ -2138,6 +2700,10 @@ export function createApiRouter(): express.Router {
         title: pkg.title,
         subjectName: pkg.subject_name,
         className: pkg.class_name,
+        teacherName: pkg.teacher_name,
+        proctorName: pkg.proctor_name || null,
+        examDate: pkg.exam_date,
+        accessRole: access,
         durationMinutes: pkg.duration_minutes,
         isActive: pkg.is_active === 1,
         maxViolations: pkg.max_violations,
@@ -2150,14 +2716,38 @@ export function createApiRouter(): express.Router {
     });
   });
 
+  function checkSessionManageAccess(sessionId: number, teacher: { teacherId: number; role: 'ADMIN' | 'TEACHER' }): {
+    session?: SessionRow;
+    pkg?: { id: number; teacher_id: number; proctor_id: number | null; max_violations: number };
+    access?: PackageAccessRole;
+    errorStatus?: number;
+    errorMessage?: string;
+  } {
+    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
+    if (!session) {
+      return { errorStatus: 404, errorMessage: 'Sesi ujian siswa tidak ditemukan.' };
+    }
+    const pkg = db
+      .prepare('SELECT id, teacher_id, proctor_id, max_violations FROM exam_packages WHERE id = ?')
+      .get(session.package_id) as { id: number; teacher_id: number; proctor_id: number | null; max_violations: number } | undefined;
+    if (!pkg) {
+      return { errorStatus: 404, errorMessage: 'Paket ujian tidak ditemukan.' };
+    }
+    const access = getPackageAccess(pkg, teacher);
+    if (access === 'NONE') {
+      return { errorStatus: 403, errorMessage: 'Anda tidak memiliki akses mengelola sesi peserta ini.' };
+    }
+    return { session, pkg, access };
+  }
+
   router.post('/sessions/:id/unlock', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const sessionId = Number(req.params.id);
-    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
-
-    if (!session) {
-      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+    const check = checkSessionManageAccess(sessionId, req.teacher!);
+    if (!check.session || !check.pkg) {
+      res.status(check.errorStatus || 404).json({ error: check.errorMessage });
       return;
     }
+    const { session, pkg } = check;
 
     if (session.status !== 'LOCKED_VIOLATION') {
       res.status(400).json({ error: 'Sesi ini tidak berada dalam status terkunci pelanggaran.' });
@@ -2170,10 +2760,6 @@ export function createApiRouter(): express.Router {
       newBonus,
       sessionId
     );
-
-    const pkg = db.prepare('SELECT max_violations FROM exam_packages WHERE id = ?').get(session.package_id) as {
-      max_violations: number;
-    };
 
     broadcastPackageEvent({
       type: 'session:unlocked',
@@ -2198,12 +2784,12 @@ export function createApiRouter(): express.Router {
 
   router.post('/sessions/:id/reset-device', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const sessionId = Number(req.params.id);
-    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
-
-    if (!session) {
-      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+    const check = checkSessionManageAccess(sessionId, req.teacher!);
+    if (!check.session) {
+      res.status(check.errorStatus || 404).json({ error: check.errorMessage });
       return;
     }
+    const { session } = check;
 
     if (session.status === 'SUBMITTED') {
       res.status(400).json({ error: 'Sesi ujian yang sudah selesai tidak dapat direset perangkatnya.' });
@@ -2231,12 +2817,12 @@ export function createApiRouter(): express.Router {
 
   router.post('/sessions/:id/force-submit', requireTeacherAuth, (req: AuthenticatedTeacherRequest, res: Response) => {
     const sessionId = Number(req.params.id);
-    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
-
-    if (!session) {
-      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+    const check = checkSessionManageAccess(sessionId, req.teacher!);
+    if (!check.session) {
+      res.status(check.errorStatus || 404).json({ error: check.errorMessage });
       return;
     }
+    const { session, access } = check;
 
     if (session.status === 'SUBMITTED') {
       res.status(400).json({ error: 'Sesi ujian ini sudah berstatus selesai/dikumpulkan.' });
@@ -2254,12 +2840,13 @@ export function createApiRouter(): express.Router {
       timestamp: Date.now(),
     });
 
+    const isProctorOnly = access === 'PROCTOR';
     res.json({
       success: true,
       sessionId,
       status: 'SUBMITTED',
-      score: finalized.score,
-      correctCount: finalized.correctCount,
+      score: isProctorOnly ? null : finalized.score,
+      correctCount: isProctorOnly ? null : finalized.correctCount,
       totalQuestions: finalized.totalQuestions,
     });
   });
@@ -2269,11 +2856,12 @@ export function createApiRouter(): express.Router {
     const { extraMinutes = 10 } = (req.body || {}) as { extraMinutes?: number };
     const cleanMinutes = Math.max(1, Math.min(60, Math.round(Number(extraMinutes) || 10)));
 
-    const session = db.prepare('SELECT * FROM exam_sessions WHERE id = ?').get(sessionId) as SessionRow | undefined;
-    if (!session) {
-      res.status(404).json({ error: 'Sesi ujian siswa tidak ditemukan.' });
+    const check = checkSessionManageAccess(sessionId, req.teacher!);
+    if (!check.session) {
+      res.status(check.errorStatus || 404).json({ error: check.errorMessage });
       return;
     }
+    const { session } = check;
 
     if (session.status === 'SUBMITTED') {
       res.status(400).json({ error: 'Tidak dapat menambah waktu untuk sesi yang sudah selesai.' });
@@ -2305,10 +2893,13 @@ export function createApiRouter(): express.Router {
     const pkg = db
       .prepare(`
         SELECT ep.*, s.name AS subject_name, c.name AS class_name,
+               t_owner.name AS teacher_name, t_proctor.name AS proctor_name,
                (SELECT COUNT(*) FROM questions q WHERE q.package_id = ep.id) AS total_questions
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
         WHERE ep.id = ?
       `)
       .get(pkgId) as (PackageRow & { total_questions: number }) | undefined;
@@ -2317,6 +2908,13 @@ export function createApiRouter(): express.Router {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
       return;
     }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access === 'NONE') {
+      res.status(403).json({ error: 'Anda tidak memiliki akses melihat rekap paket ujian ini.' });
+      return;
+    }
+    const isProctorOnly = access === 'PROCTOR';
 
     const rows = db
       .prepare(`
@@ -2334,87 +2932,109 @@ export function createApiRouter(): express.Router {
         WHERE st.class_id = ?
         ORDER BY st.nis ASC
       `)
-      .all(pkg.total_questions, pkgId, pkg.class_id);
-
-    const questions = db
-      .prepare(`
-        SELECT id, question_text, options_json, correct_option, points
-        FROM questions
-        WHERE package_id = ?
-        ORDER BY id ASC
-      `)
-      .all(pkgId) as Array<{
-      id: number;
-      question_text: string;
-      options_json: string;
-      correct_option: string;
-      points: number;
+      .all(pkg.total_questions, pkgId, pkg.class_id) as Array<{
+      session_id: number | null;
+      nis: string;
+      name: string;
+      class_name: string;
+      status: string;
+      correct_count: number | null;
+      total_questions: number;
+      score: number | null;
+      violation_count: number;
+      submitted_at: number | null;
     }>;
 
-    const submittedSessions = db
-      .prepare(`SELECT id FROM exam_sessions WHERE package_id = ? AND status = 'SUBMITTED'`)
-      .all(pkgId) as Array<{ id: number }>;
+    const sanitizedRows = isProctorOnly
+      ? rows.map((r) => ({
+          ...r,
+          correct_count: null,
+          score: null,
+        }))
+      : rows;
 
-    const submittedSessionIds = submittedSessions.map((s) => s.id);
-    const answerByQuestion = new Map<number, string[]>();
-    if (submittedSessionIds.length > 0) {
-      const placeholders = submittedSessionIds.map(() => '?').join(',');
-      const ansRows = db
-        .prepare(
-          `SELECT question_id, selected_option FROM student_answers WHERE session_id IN (${placeholders})`
-        )
-        .all(...submittedSessionIds) as Array<{ question_id: number; selected_option: string }>;
+    let questionAnalytics: Array<Record<string, unknown>> = [];
+    if (!isProctorOnly) {
+      const questions = db
+        .prepare(`
+          SELECT id, question_text, options_json, correct_option, points
+          FROM questions
+          WHERE package_id = ?
+          ORDER BY id ASC
+        `)
+        .all(pkgId) as Array<{
+        id: number;
+        question_text: string;
+        options_json: string;
+        correct_option: string;
+        points: number;
+      }>;
 
-      for (const a of ansRows) {
-        const list = answerByQuestion.get(a.question_id) || [];
-        list.push(a.selected_option);
-        answerByQuestion.set(a.question_id, list);
+      const submittedSessions = db
+        .prepare(`SELECT id FROM exam_sessions WHERE package_id = ? AND status = 'SUBMITTED'`)
+        .all(pkgId) as Array<{ id: number }>;
+
+      const submittedSessionIds = submittedSessions.map((s) => s.id);
+      const answerByQuestion = new Map<number, string[]>();
+      if (submittedSessionIds.length > 0) {
+        const placeholders = submittedSessionIds.map(() => '?').join(',');
+        const ansRows = db
+          .prepare(
+            `SELECT question_id, selected_option FROM student_answers WHERE session_id IN (${placeholders})`
+          )
+          .all(...submittedSessionIds) as Array<{ question_id: number; selected_option: string }>;
+
+        for (const a of ansRows) {
+          const list = answerByQuestion.get(a.question_id) || [];
+          list.push(a.selected_option);
+          answerByQuestion.set(a.question_id, list);
+        }
       }
+
+      const totalSubmitted = submittedSessionIds.length;
+      questionAnalytics = questions.map((q, index) => {
+        let parsedOptions: Array<{ key: string; text: string }> = [];
+        try {
+          parsedOptions = JSON.parse(q.options_json);
+        } catch {
+          parsedOptions = [];
+        }
+        const optionDistribution: Record<string, number> = {};
+        for (const opt of parsedOptions) {
+          optionDistribution[opt.key] = 0;
+        }
+
+        const answers = answerByQuestion.get(q.id) || [];
+        let correctCount = 0;
+        let wrongCount = 0;
+        for (const sel of answers) {
+          if (sel) {
+            optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
+          }
+          if (sel === q.correct_option) {
+            correctCount++;
+          } else if (sel) {
+            wrongCount++;
+          }
+        }
+        const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
+        const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
+
+        return {
+          questionId: q.id,
+          number: index + 1,
+          questionText: q.question_text,
+          correctOption: q.correct_option,
+          points: q.points,
+          totalSubmitted,
+          correctCount,
+          wrongCount,
+          blankCount,
+          correctRate,
+          optionDistribution,
+        };
+      });
     }
-
-    const totalSubmitted = submittedSessionIds.length;
-    const questionAnalytics = questions.map((q, index) => {
-      let parsedOptions: Array<{ key: string; text: string }> = [];
-      try {
-        parsedOptions = JSON.parse(q.options_json);
-      } catch {
-        parsedOptions = [];
-      }
-      const optionDistribution: Record<string, number> = {};
-      for (const opt of parsedOptions) {
-        optionDistribution[opt.key] = 0;
-      }
-
-      const answers = answerByQuestion.get(q.id) || [];
-      let correctCount = 0;
-      let wrongCount = 0;
-      for (const sel of answers) {
-        if (sel) {
-          optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
-        }
-        if (sel === q.correct_option) {
-          correctCount++;
-        } else if (sel) {
-          wrongCount++;
-        }
-      }
-      const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
-      const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
-
-      return {
-        questionId: q.id,
-        number: index + 1,
-        questionText: q.question_text,
-        correctOption: q.correct_option,
-        points: q.points,
-        totalSubmitted,
-        correctCount,
-        wrongCount,
-        blankCount,
-        correctRate,
-        optionDistribution,
-      };
-    });
 
     res.json({
       package: {
@@ -2422,9 +3042,14 @@ export function createApiRouter(): express.Router {
         title: pkg.title,
         subjectName: pkg.subject_name,
         className: pkg.class_name,
+        teacherName: pkg.teacher_name,
+        proctorName: pkg.proctor_name || null,
+        examDate: pkg.exam_date,
+        kkm: pkg.kkm,
+        accessRole: access,
         totalQuestions: pkg.total_questions,
       },
-      records: rows,
+      records: sanitizedRows,
       questionAnalytics,
     });
   });
@@ -2434,13 +3059,18 @@ export function createApiRouter(): express.Router {
     const session = db
       .prepare(`
         SELECT es.*, st.nis AS student_nis, st.name AS student_name, c.name AS student_class_name,
-               ep.title AS pkg_title, s.name AS pkg_subject_name, c2.name AS pkg_class_name
+               ep.title AS pkg_title, ep.teacher_id AS pkg_teacher_id, ep.proctor_id AS pkg_proctor_id,
+               ep.exam_date AS pkg_exam_date, ep.kkm AS pkg_kkm,
+               t_owner.name AS pkg_teacher_name, t_proctor.name AS pkg_proctor_name,
+               s.name AS pkg_subject_name, c2.name AS pkg_class_name
         FROM exam_sessions es
         JOIN students st ON st.id = es.student_id
         JOIN classes c ON c.id = st.class_id
         JOIN exam_packages ep ON ep.id = es.package_id
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c2 ON c2.id = ep.class_id
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
         WHERE es.id = ?
       `)
       .get(sessionId) as
@@ -2458,6 +3088,12 @@ export function createApiRouter(): express.Router {
           student_name: string;
           student_class_name: string;
           pkg_title: string;
+          pkg_teacher_id: number;
+          pkg_proctor_id: number | null;
+          pkg_exam_date: string;
+          pkg_kkm: number;
+          pkg_teacher_name: string;
+          pkg_proctor_name: string | null;
           pkg_subject_name: string;
           pkg_class_name: string;
         }
@@ -2465,6 +3101,15 @@ export function createApiRouter(): express.Router {
 
     if (!session) {
       res.status(404).json({ error: 'Sesi ujian tidak ditemukan.' });
+      return;
+    }
+
+    const access = getPackageAccess(
+      { teacher_id: session.pkg_teacher_id, proctor_id: session.pkg_proctor_id },
+      req.teacher!
+    );
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Akses ditolak. Guru Pengawas tidak diperkenankan membuka lembar jawaban & kunci soal.' });
       return;
     }
 
@@ -2529,6 +3174,10 @@ export function createApiRouter(): express.Router {
         title: session.pkg_title,
         subjectName: session.pkg_subject_name,
         className: session.pkg_class_name,
+        teacherName: session.pkg_teacher_name,
+        proctorName: session.pkg_proctor_name || null,
+        examDate: session.pkg_exam_date || '',
+        kkm: session.pkg_kkm ?? 75,
       },
       items,
     });
@@ -2538,21 +3187,50 @@ export function createApiRouter(): express.Router {
     const pkgId = Number(req.params.id);
     const pkg = db
       .prepare(`
-        SELECT ep.id, ep.title, ep.class_id, s.name AS subject_name, c.name AS class_name,
+        SELECT ep.id, ep.title, ep.class_id, ep.teacher_id, ep.proctor_id, ep.exam_date, ep.kkm,
+               t_owner.name AS teacher_name, t_proctor.name AS proctor_name,
+               s.name AS subject_name, c.name AS class_name,
                (SELECT COUNT(*) FROM questions q WHERE q.package_id = ep.id) AS total_questions
         FROM exam_packages ep
         JOIN subjects s ON s.id = ep.subject_id
         JOIN classes c ON c.id = ep.class_id
+        JOIN teachers t_owner ON t_owner.id = ep.teacher_id
+        LEFT JOIN teachers t_proctor ON t_proctor.id = ep.proctor_id
         WHERE ep.id = ?
       `)
       .get(pkgId) as
-      | { id: number; title: string; class_id: number; subject_name: string; class_name: string; total_questions: number }
+      | {
+          id: number;
+          title: string;
+          class_id: number;
+          teacher_id: number;
+          proctor_id: number | null;
+          exam_date: string;
+          kkm: number;
+          teacher_name: string;
+          proctor_name: string | null;
+          subject_name: string;
+          class_name: string;
+          total_questions: number;
+        }
       | undefined;
 
     if (!pkg) {
       res.status(404).json({ error: 'Paket ujian tidak ditemukan.' });
       return;
     }
+
+    const access = getPackageAccess(pkg, req.teacher!);
+    if (access !== 'ADMIN' && access !== 'OWNER') {
+      res.status(403).json({ error: 'Guru Pengawas hanya dapat memantau status penyelesaian peserta dan tidak dapat mengunduh rekap nilai.' });
+      return;
+    }
+
+    const rawKkmParam = req.query.kkm !== undefined ? Number(req.query.kkm) : NaN;
+    const effectiveKkm =
+      Number.isFinite(rawKkmParam) && rawKkmParam >= 0 && rawKkmParam <= 100
+        ? Math.round(rawKkmParam)
+        : pkg.kkm ?? 75;
 
     const rows = db
       .prepare(`
@@ -2566,7 +3244,6 @@ export function createApiRouter(): express.Router {
         JOIN classes c ON c.id = st.class_id
         LEFT JOIN exam_sessions es ON es.student_id = st.id AND es.package_id = ?
         WHERE st.class_id = ?
-        ORDER BY st.nis ASC
       `)
       .all(pkg.total_questions, pkgId, pkg.class_id) as Array<{
       nis: string;
@@ -2579,23 +3256,68 @@ export function createApiRouter(): express.Router {
       violation_count: number;
     }>;
 
-    const header = ['NIS', 'Nama Siswa', 'Kelas', 'Benar', 'Total Soal', 'Nilai Akhir', 'Status', 'Jumlah Pelanggaran'];
-    const lines = [header.join(',')];
+    // Sort descending by score (largest first), then unfinished by name
+    rows.sort((a, b) => {
+      const sa = a.status === 'SUBMITTED' && a.score !== null ? Number(a.score) : -1;
+      const sb = b.status === 'SUBMITTED' && b.score !== null ? Number(b.score) : -1;
+      return sb - sa || a.name.localeCompare(b.name);
+    });
 
-    for (const r of rows) {
+    const submittedRows = rows.filter((r) => r.status === 'SUBMITTED' && r.score !== null);
+    const scores = submittedRows.map((r) => Number(r.score || 0));
+    const avgScore =
+      scores.length > 0 ? (scores.reduce((acc, val) => acc + val, 0) / scores.length).toFixed(1) : '-';
+    const maxScore = scores.length > 0 ? String(Math.max(...scores)) : '-';
+    const minScore = scores.length > 0 ? String(Math.min(...scores)) : '-';
+    const passedCount = submittedRows.filter((r) => Number(r.score || 0) >= effectiveKkm).length;
+    const remedialCount = submittedRows.filter((r) => Number(r.score || 0) < effectiveKkm).length;
+    const passRate = submittedRows.length > 0 ? Math.round((passedCount / submittedRows.length) * 100) : 0;
+
+    const lines: string[] = [
+      [escapeCsvField('Sekolah'), escapeCsvField('MTs Nurul Islam Gunung Sari')].join(','),
+      [escapeCsvField('Judul Ujian'), escapeCsvField(pkg.title)].join(','),
+      [escapeCsvField('Kelas'), escapeCsvField(pkg.class_name)].join(','),
+      [escapeCsvField('Mata Pelajaran'), escapeCsvField(pkg.subject_name)].join(','),
+      [escapeCsvField('Guru Mapel'), escapeCsvField(pkg.teacher_name || '-')].join(','),
+      [escapeCsvField('Guru Pengawas'), escapeCsvField(pkg.proctor_name || 'Belum ditugaskan')].join(','),
+      [escapeCsvField('Tanggal Ujian'), escapeCsvField(pkg.exam_date || '-')].join(','),
+      [escapeCsvField('KKM'), escapeCsvField(effectiveKkm)].join(','),
+      '',
+      [escapeCsvField('RINGKASAN HASIL UJIAN'), escapeCsvField('Nilai / Jumlah')].join(','),
+      [escapeCsvField('Peserta Selesai'), escapeCsvField(`${submittedRows.length} / ${rows.length}`)].join(','),
+      [escapeCsvField('Rata-rata Nilai'), escapeCsvField(`${avgScore} (Tertinggi: ${maxScore}, Terendah: ${minScore})`)].join(','),
+      [escapeCsvField(`Tuntas (>= ${effectiveKkm})`), escapeCsvField(`${passedCount} siswa (${passRate}%)`)].join(','),
+      [escapeCsvField(`Remedial (< ${effectiveKkm})`), escapeCsvField(`${remedialCount} siswa`)].join(','),
+      '',
+      ['No', 'NIS', 'Nama Siswa', 'Kelas', 'Benar', 'Total Soal', 'Nilai Akhir', 'Ketuntasan', 'Status', 'Jumlah Pelanggaran'].join(','),
+    ];
+
+    rows.forEach((r, idx) => {
+      const isSubmitted = r.status === 'SUBMITTED' && r.score !== null;
+      const ketuntasan = isSubmitted ? (Number(r.score) >= effectiveKkm ? 'Tuntas' : 'Remedial') : '-';
+      const statusLabel =
+        r.status === 'SUBMITTED'
+          ? 'Selesai'
+          : r.status === 'IN_PROGRESS'
+            ? 'Mengerjakan'
+            : r.status === 'LOCKED_VIOLATION'
+              ? 'Terkunci'
+              : 'Belum Mulai';
       lines.push(
         [
+          escapeCsvField(idx + 1),
           escapeCsvField(r.nis),
           escapeCsvField(r.name),
           escapeCsvField(r.class_name),
-          escapeCsvField(r.correct_count ?? 0),
+          escapeCsvField(isSubmitted ? (r.correct_count ?? 0) : '-'),
           escapeCsvField(r.total_questions),
-          escapeCsvField(r.score ?? 0),
-          escapeCsvField(r.status),
+          escapeCsvField(isSubmitted ? r.score : '-'),
+          escapeCsvField(ketuntasan),
+          escapeCsvField(statusLabel),
           escapeCsvField(r.violation_count),
         ].join(',')
       );
-    }
+    });
 
     const safeSlug = pkg.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');

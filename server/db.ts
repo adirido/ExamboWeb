@@ -53,7 +53,7 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS teachers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
+      nip TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'TEACHER',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -97,9 +97,13 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS exam_packages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       teacher_id INTEGER NOT NULL,
+      proctor_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL,
       subject_id INTEGER NOT NULL,
       class_id INTEGER NOT NULL,
       title TEXT NOT NULL,
+      exam_date TEXT NOT NULL DEFAULT '',
+      kkm INTEGER NOT NULL DEFAULT 75,
+      schedule_group TEXT NOT NULL DEFAULT '',
       duration_minutes INTEGER NOT NULL DEFAULT 60,
       is_active INTEGER NOT NULL DEFAULT 0,
       max_violations INTEGER NOT NULL DEFAULT 3,
@@ -175,16 +179,61 @@ export function initDatabase(): void {
     );
   `);
 
+  // Ensure existing DBs migrate teachers.email -> teachers.nip
+  const teacherColumns = db.prepare(`PRAGMA table_info(teachers)`).all() as Array<{ name: string }>;
+  const hasTeacherEmail = teacherColumns.some((col) => col.name === 'email');
+  const hasTeacherNip = teacherColumns.some((col) => col.name === 'nip');
+  if (hasTeacherEmail && !hasTeacherNip) {
+    db.exec(`ALTER TABLE teachers RENAME COLUMN email TO nip`);
+  }
+
   // Ensure existing DBs have pin_encrypted column
   const studentColumns = db.prepare(`PRAGMA table_info(students)`).all() as Array<{ name: string }>;
   if (!studentColumns.some((col) => col.name === 'pin_encrypted')) {
     db.exec(`ALTER TABLE students ADD COLUMN pin_encrypted TEXT NOT NULL DEFAULT ''`);
   }
 
+  // Ensure existing DBs have proctor_id, exam_date, kkm, and schedule_group on exam_packages
+  const pkgColumns = db.prepare(`PRAGMA table_info(exam_packages)`).all() as Array<{ name: string }>;
+  if (!pkgColumns.some((col) => col.name === 'proctor_id')) {
+    db.exec(`ALTER TABLE exam_packages ADD COLUMN proctor_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL`);
+  }
+  if (!pkgColumns.some((col) => col.name === 'exam_date')) {
+    db.exec(`ALTER TABLE exam_packages ADD COLUMN exam_date TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!pkgColumns.some((col) => col.name === 'kkm')) {
+    db.exec(`ALTER TABLE exam_packages ADD COLUMN kkm INTEGER NOT NULL DEFAULT 75`);
+  }
+  if (!pkgColumns.some((col) => col.name === 'schedule_group')) {
+    db.exec(`ALTER TABLE exam_packages ADD COLUMN schedule_group TEXT NOT NULL DEFAULT ''`);
+  }
+
   const teacherCount = (db.prepare('SELECT COUNT(*) as cnt FROM teachers').get() as { cnt: number }).cnt;
   if (teacherCount === 0) {
     seedInitialData();
   } else {
+    // Migrate legacy seeded teacher credentials to NIP & new passwords
+    const budi = db
+      .prepare(`SELECT id FROM teachers WHERE nip = ?`)
+      .get('budi.santoso@examflow.sch.id') as { id: number } | undefined;
+    if (budi) {
+      db.prepare(`UPDATE teachers SET nip = ?, password_hash = ? WHERE id = ?`).run(
+        '252500',
+        hashSecret('101090'),
+        budi.id
+      );
+    }
+    const siti = db
+      .prepare(`SELECT id FROM teachers WHERE nip = ?`)
+      .get('siti.aminah@examflow.sch.id') as { id: number } | undefined;
+    if (siti) {
+      db.prepare(`UPDATE teachers SET nip = ?, password_hash = ? WHERE id = ?`).run(
+        '252501',
+        hashSecret('101080'),
+        siti.id
+      );
+    }
+
     // Backfill pin_encrypted for seeded students whose PIN is '123456' when migrating existing DB
     const unencrypted = db
       .prepare(`SELECT id, pin_hash FROM students WHERE pin_encrypted = ''`)
@@ -202,9 +251,9 @@ export function initDatabase(): void {
 }
 
 function seedInitialData(): void {
-  const insertTeacher = db.prepare('INSERT INTO teachers (name, email, password_hash, role) VALUES (?, ?, ?, ?)');
-  const t1 = Number(insertTeacher.run('Budi Santoso, S.Pd.', 'budi.santoso@examflow.sch.id', hashSecret('guru123'), 'ADMIN').lastInsertRowid);
-  const t2 = Number(insertTeacher.run('Siti Aminah, M.Pd.', 'siti.aminah@examflow.sch.id', hashSecret('guru123'), 'TEACHER').lastInsertRowid);
+  const insertTeacher = db.prepare('INSERT INTO teachers (name, nip, password_hash, role) VALUES (?, ?, ?, ?)');
+  const t1 = Number(insertTeacher.run('Budi Santoso, S.Pd.', '252500', hashSecret('101090'), 'ADMIN').lastInsertRowid);
+  const t2 = Number(insertTeacher.run('Siti Aminah, M.Pd.', '252501', hashSecret('101080'), 'TEACHER').lastInsertRowid);
 
   const insertSubject = db.prepare('INSERT INTO subjects (code, name, description) VALUES (?, ?, ?)');
   const sMat = Number(insertSubject.run('MTK', 'Matematika', 'Aljabar, Geometri, Persamaan Linear, dan Statistika').lastInsertRowid);
@@ -262,16 +311,17 @@ function seedInitialData(): void {
     insertStudent.run(nis, name, c9a, demoPinHash, demoPinEncrypted);
   }
 
-  // Seed Exam Packages
+  // Seed Exam Packages (Math 8A & 8B share schedule_group, with Siti as proctor for 8A)
+  const todayIso = new Date().toISOString().slice(0, 10);
   const insertPkg = db.prepare(`
-    INSERT INTO exam_packages (teacher_id, subject_id, class_id, title, duration_minutes, is_active, max_violations, shuffle_questions, shuffle_options, current_token)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO exam_packages (teacher_id, proctor_id, subject_id, class_id, title, exam_date, kkm, schedule_group, duration_minutes, is_active, max_violations, shuffle_questions, shuffle_options, current_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const p1 = Number(insertPkg.run(t1, sMat, c8a, 'UAS Matematika Kelas 8A — Semester Ganjil', 60, 1, 3, 1, 1, 'MTK8A1').lastInsertRowid);
-  const p2 = Number(insertPkg.run(t1, sMat, c8b, 'UAS Matematika Kelas 8B — Semester Ganjil', 60, 0, 3, 1, 1, 'MTK8B2').lastInsertRowid);
-  const p3 = Number(insertPkg.run(t1, sInf, c9a, 'PTS Informatika Kelas 9A — Algoritma & Jaringan', 45, 1, 3, 1, 1, 'INF9A3').lastInsertRowid);
-  const p4 = Number(insertPkg.run(t2, sIpa, c8a, 'Ujian Harian IPA Terpadu Kelas 8A', 40, 1, 2, 1, 1, generateExamToken()).lastInsertRowid);
+  const p1 = Number(insertPkg.run(t1, t2, sMat, c8a, 'UAS Matematika Kelas 8A — Semester Ganjil', todayIso, 75, 'grp-uas-mtk-8', 60, 1, 3, 1, 1, 'MTK8A1').lastInsertRowid);
+  const p2 = Number(insertPkg.run(t1, null, sMat, c8b, 'UAS Matematika Kelas 8B — Semester Ganjil', todayIso, 75, 'grp-uas-mtk-8', 60, 0, 3, 1, 1, 'MTK8B2').lastInsertRowid);
+  const p3 = Number(insertPkg.run(t1, null, sInf, c9a, 'PTS Informatika Kelas 9A — Algoritma & Jaringan', todayIso, 75, '', 45, 1, 3, 1, 1, 'INF9A3').lastInsertRowid);
+  const p4 = Number(insertPkg.run(t2, t1, sIpa, c8a, 'Ujian Harian IPA Terpadu Kelas 8A', todayIso, 75, '', 40, 1, 2, 1, 1, generateExamToken()).lastInsertRowid);
 
   // Seed Question Bank for UAS Matematika 8A (6 rich questions) & cloned to 8B
   const insertQ = db.prepare(`

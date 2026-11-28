@@ -1,7 +1,16 @@
 export interface TeacherProfile {
   id: number;
   name: string;
-  email: string;
+  nip: string;
+  role: 'TEACHER' | 'ADMIN';
+}
+
+export type PackageAccessRole = 'ADMIN' | 'OWNER' | 'PROCTOR';
+
+export interface ProctorOption {
+  id: number;
+  name: string;
+  nip: string;
   role: 'TEACHER' | 'ADMIN';
 }
 
@@ -18,7 +27,7 @@ export interface TeacherAssignment {
 export interface TeacherAccountRecord {
   id: number;
   name: string;
-  email: string;
+  nip: string;
   role: 'TEACHER' | 'ADMIN';
   created_at: string;
   package_count?: number;
@@ -35,14 +44,14 @@ export interface ImportTeachersResult {
   };
   importedCredentials: Array<{
     name: string;
-    email: string;
+    nip: string;
     role: 'TEACHER' | 'ADMIN';
     password: string;
     action: 'CREATED' | 'UPDATED';
   }>;
   skipped: Array<{
     lineNumber: number;
-    email: string;
+    nip: string;
     name: string;
     reason: string;
   }>;
@@ -73,9 +82,13 @@ export interface ClassItem {
 export interface ExamPackage {
   id: number;
   teacher_id: number;
+  proctor_id?: number | null;
   subject_id: number;
   class_id: number;
   title: string;
+  exam_date?: string;
+  kkm?: number;
+  schedule_group?: string;
   duration_minutes: number;
   is_active: number;
   max_violations: number;
@@ -87,6 +100,9 @@ export interface ExamPackage {
   subject_name: string;
   subject_code: string;
   class_name: string;
+  teacher_name?: string;
+  proctor_name?: string | null;
+  access_role?: PackageAccessRole;
   question_count: number;
   class_student_count: number;
   active_count: number;
@@ -99,6 +115,9 @@ export interface QrPayloadResponse {
   title: string;
   className: string;
   subjectName: string;
+  teacherName?: string;
+  proctorName?: string | null;
+  examDate?: string;
   isActive: boolean;
   currentToken: string;
   studentExamUrl: string;
@@ -186,6 +205,7 @@ export interface ImportQuestionsResult {
     totalRows: number;
     createdCount: number;
     errorCount: number;
+    syncedPackageCount?: number;
   };
   errors: Array<{
     lineNumber: number;
@@ -233,6 +253,10 @@ export interface MonitoringPayload {
     title: string;
     subjectName: string;
     className: string;
+    teacherName?: string;
+    proctorName?: string | null;
+    examDate?: string;
+    accessRole?: PackageAccessRole;
     durationMinutes: number;
     isActive: boolean;
     maxViolations: number;
@@ -303,6 +327,10 @@ export interface SessionReviewPayload {
     title: string;
     subjectName: string;
     className: string;
+    teacherName?: string;
+    proctorName?: string | null;
+    examDate?: string;
+    kkm?: number;
   };
   items: SessionReviewItem[];
 }

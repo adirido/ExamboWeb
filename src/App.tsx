@@ -55,7 +55,7 @@ function readStoredTeacherSession(): { token: string; profile: TeacherProfile } 
       parsed.token.length > 0 &&
       parsed.profile &&
       typeof parsed.profile.id === 'number' &&
-      typeof parsed.profile.email === 'string'
+      typeof parsed.profile.nip === 'string'
     ) {
       return { token: parsed.token, profile: parsed.profile };
     }

@@ -24,11 +24,11 @@ async function parseJsonResponse<T>(res: Response): Promise<T> {
 }
 
 export const teacherApi = {
-  async login(email: string, password: string) {
+  async login(nip: string, password: string) {
     const res = await fetch(resolveApiUrl('/api/auth/login'), {
       method: 'POST',
       headers: buildApiHeaders(null, { 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ nip, password }),
     });
     return parseJsonResponse<{ token: string; teacher: import('./types').TeacherProfile }>(res);
   },
@@ -51,6 +51,7 @@ export const teacherApi = {
       assignments: import('./types').TeacherAssignment[];
       subjects: import('./types').SubjectItem[];
       classes: import('./types').ClassItem[];
+      teachers?: import('./types').ProctorOption[];
     }>(res);
   },
 
@@ -76,7 +77,12 @@ export const teacherApi = {
       title: string;
       subjectId: number;
       classId?: number;
+      classIds?: number[];
       className?: string;
+      examDate?: string;
+      kkm?: number;
+      proctorId?: number | null;
+      proctorsByClass?: Record<string, number | null>;
       durationMinutes: number;
       maxViolations: number;
       shuffleQuestions: boolean;
@@ -91,7 +97,10 @@ export const teacherApi = {
       headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    return parseJsonResponse<{ package: import('./types').ExamPackage }>(res);
+    return parseJsonResponse<{
+      package: import('./types').ExamPackage;
+      packages?: import('./types').ExamPackage[];
+    }>(res);
   },
 
   async updatePackage(
@@ -101,6 +110,9 @@ export const teacherApi = {
       title: string;
       subjectId: number;
       classId: number;
+      proctorId: number | null;
+      examDate: string;
+      kkm: number;
       durationMinutes: number;
       maxViolations: number;
       shuffleQuestions: boolean;
@@ -199,7 +211,7 @@ export const teacherApi = {
 
   async createAdminTeacher(
     token: string,
-    body: { name: string; email: string; password: string; role: 'TEACHER' | 'ADMIN' }
+    body: { name: string; nip: string; password: string; role: 'TEACHER' | 'ADMIN' }
   ) {
     const res = await fetch(resolveApiUrl('/api/admin/teachers'), {
       method: 'POST',
@@ -212,7 +224,7 @@ export const teacherApi = {
   async updateAdminTeacher(
     token: string,
     id: number,
-    body: { name?: string; email?: string; role?: 'TEACHER' | 'ADMIN'; newPassword?: string }
+    body: { name?: string; nip?: string; role?: 'TEACHER' | 'ADMIN'; newPassword?: string }
   ) {
     const res = await fetch(resolveApiUrl(`/api/admin/teachers/${id}`), {
       method: 'PUT',
@@ -228,7 +240,7 @@ export const teacherApi = {
       headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
       body: JSON.stringify(customPassword ? { customPassword } : {}),
     });
-    return parseJsonResponse<{ teacherId: number; name: string; email: string; newPassword: string }>(res);
+    return parseJsonResponse<{ teacherId: number; name: string; nip: string; newPassword: string }>(res);
   },
 
   async deleteAdminTeacher(token: string, id: number) {
@@ -306,6 +318,7 @@ export const teacherApi = {
       options: import('./types').QuestionOption[];
       correctOption: string;
       points: number;
+      syncSiblings?: boolean;
     }
   ) {
     const res = await fetch(resolveApiUrl(`/api/packages/${packageId}/questions`), {
@@ -313,13 +326,13 @@ export const teacherApi = {
       headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    return parseJsonResponse<{ id: number }>(res);
+    return parseJsonResponse<{ id: number; syncedPackageCount?: number }>(res);
   },
 
   async importQuestions(
     token: string,
     packageId: number,
-    body: { rawText: string; replaceExisting: boolean }
+    body: { rawText: string; replaceExisting: boolean; syncSiblings?: boolean }
   ) {
     const res = await fetch(resolveApiUrl(`/api/packages/${packageId}/questions/import`), {
       method: 'POST',
@@ -337,6 +350,7 @@ export const teacherApi = {
       options: import('./types').QuestionOption[];
       correctOption: string;
       points: number;
+      syncSiblings?: boolean;
     }
   ) {
     const res = await fetch(resolveApiUrl(`/api/questions/${questionId}`), {
@@ -344,7 +358,7 @@ export const teacherApi = {
       headers: buildApiHeaders(token, { 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
-    return parseJsonResponse<{ success: boolean }>(res);
+    return parseJsonResponse<{ success: boolean; syncedPackageCount?: number }>(res);
   },
 
   async deleteQuestion(token: string, questionId: number) {
@@ -439,8 +453,8 @@ export const teacherApi = {
       success: boolean;
       sessionId: number;
       status: string;
-      score: number;
-      correctCount: number;
+      score: number | null;
+      correctCount: number | null;
       totalQuestions: number;
     }>(res);
   },
@@ -464,7 +478,18 @@ export const teacherApi = {
       headers: buildApiHeaders(token),
     });
     return parseJsonResponse<{
-      package: { id: number; title: string; subjectName: string; className: string; totalQuestions: number };
+      package: {
+        id: number;
+        title: string;
+        subjectName: string;
+        className: string;
+        teacherName?: string;
+        proctorName?: string | null;
+        examDate?: string;
+        kkm?: number;
+        accessRole?: import('./types').PackageAccessRole;
+        totalQuestions: number;
+      };
       records: import('./types').RecapRow[];
       questionAnalytics?: import('./types').QuestionAnalyticRow[];
     }>(res);
@@ -477,8 +502,9 @@ export const teacherApi = {
     return parseJsonResponse<import('./types').SessionReviewPayload>(res);
   },
 
-  async downloadRecapCsv(token: string, packageId: number, filename: string) {
-    const res = await fetch(resolveApiUrl(`/api/packages/${packageId}/recap/csv`), {
+  async downloadRecapCsv(token: string, packageId: number, filename: string, kkm?: number) {
+    const query = typeof kkm === 'number' ? `?kkm=${encodeURIComponent(String(kkm))}` : '';
+    const res = await fetch(resolveApiUrl(`/api/packages/${packageId}/recap/csv${query}`), {
       headers: buildApiHeaders(token),
     });
     if (!res.ok) throw new Error('Gagal mengunduh file CSV rekap nilai.');

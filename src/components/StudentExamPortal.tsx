@@ -223,6 +223,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
 
   async function handleVerifyEntry(e: React.FormEvent) {
     e.preventDefault();
+    if (verifying) return;
     setEntryError(null);
     setVerifying(true);
     try {
@@ -311,12 +312,16 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [autoTabGuard, sessionToken, examData?.status]);
 
-  // Keyboard arrow navigation between questions in active workspace
+  // Keyboard navigation & Escape handler for submit confirmation
   useEffect(() => {
     if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS') return;
     const total = examData.questions.length;
     if (total === 0) return;
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && showSubmitConfirm && !submitting) {
+        setShowSubmitConfirm(false);
+        return;
+      }
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === 'ArrowLeft') {
@@ -329,7 +334,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [sessionToken, examData?.status, examData?.questions.length]);
+  }, [sessionToken, examData?.status, examData?.questions.length, showSubmitConfirm, submitting]);
 
   function toggleFlagQuestion(questionId: number) {
     setFlaggedIds((prev) => ({
@@ -339,7 +344,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   }
 
   async function handleSelectAnswer(questionId: number, originalKey: string) {
-    if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS') return;
+    if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS' || submitting) return;
     setAnswers((prev) => ({ ...prev, [String(questionId)]: originalKey }));
     setSavingAnswer(true);
     try {
@@ -361,7 +366,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   }
 
   async function triggerViolation(violationType: string, detail: string) {
-    if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS') return;
+    if (!sessionToken || !examData || examData.status !== 'IN_PROGRESS' || submitting) return;
     try {
       const res = await exambroApi.reportViolation(sessionToken, violationType, detail);
       setExamData((prev) =>
@@ -387,7 +392,7 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
   }
 
   async function handleFinalSubmit() {
-    if (!sessionToken) return;
+    if (!sessionToken || submitting) return;
     setSubmitting(true);
     try {
       await exambroApi.submitExam(sessionToken);
@@ -1165,11 +1170,12 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                     {firstPendingIdx >= 0 && (
                       <button
                         type="button"
+                        disabled={submitting}
                         onClick={() => {
                           setCurrentIdx(firstPendingIdx);
                           setShowSubmitConfirm(false);
                         }}
-                        className="font-semibold text-blue-700 hover:underline cursor-pointer"
+                        className="font-semibold text-blue-700 hover:underline disabled:opacity-50 cursor-pointer"
                       >
                         Periksa soal pertama yang belum selesai &rarr;
                       </button>
@@ -1181,14 +1187,15 @@ export const StudentExamPortal: React.FC<StudentExamPortalProps> = ({
                     type="button"
                     disabled={submitting}
                     onClick={handleFinalSubmit}
-                    className="flex-1 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+                    className="flex-1 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
                   >
                     {submitting ? 'Mengirim...' : 'Ya, Kumpulkan'}
                   </button>
                   <button
                     type="button"
+                    disabled={submitting}
                     onClick={() => setShowSubmitConfirm(false)}
-                    className="px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                    className="px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                   >
                     Batal
                   </button>

@@ -23,11 +23,14 @@ import type {
   ImportQuestionsResult,
   QuestionOption,
   SubjectItem,
+  TeacherAssignment,
   TeacherQuestion,
 } from '../types';
 
 interface QuestionBankViewProps {
   token: string;
+  teacherRole?: 'ADMIN' | 'TEACHER';
+  assignments?: TeacherAssignment[];
   packages: ExamPackage[];
   subjects: SubjectItem[];
   classes: ClassItem[];
@@ -66,6 +69,8 @@ function generateClientToken(): string {
 
 export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   token,
+  teacherRole = 'TEACHER',
+  assignments = [],
   packages,
   subjects,
   classes,
@@ -73,8 +78,18 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   onSelectPackage,
   onPackagesChanged,
 }) => {
-  const activePkgId = selectedPackageId || packages[0]?.id || null;
-  const activePkg = packages.find((p) => p.id === activePkgId) || null;
+  const isAdmin = teacherRole === 'ADMIN';
+  const canCreatePackage = isAdmin || assignments.length > 0;
+  const editablePackages = packages.filter((p) => p.access_role !== 'PROCTOR');
+  const activePkgId =
+    (selectedPackageId && editablePackages.some((p) => p.id === selectedPackageId)
+      ? selectedPackageId
+      : editablePackages[0]?.id) || null;
+  const activePkg = editablePackages.find((p) => p.id === activePkgId) || null;
+  const parallelSiblings = activePkg?.schedule_group
+    ? editablePackages.filter((p) => p.schedule_group === activePkg.schedule_group && p.id !== activePkg.id)
+    : [];
+  const [syncSiblings, setSyncSiblings] = useState(true);
 
   const [questions, setQuestions] = useState<TeacherQuestion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -96,7 +111,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [showNewPkgModal, setShowNewPkgModal] = useState(false);
   const [pkgTitle, setPkgTitle] = useState('');
   const [pkgSubjectId, setPkgSubjectId] = useState<number>(subjects[0]?.id || 1);
-  const [pkgClassName, setPkgClassName] = useState<string>(classes[0]?.name || '8A');
+  const [pkgClassName, setPkgClassName] = useState<string>(classes[0]?.name || '');
   const [pkgDuration, setPkgDuration] = useState(60);
   const [pkgToken, setPkgToken] = useState('');
   const [pkgShuffleQ, setPkgShuffleQ] = useState(true);
@@ -104,6 +119,10 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [pkgActive, setPkgActive] = useState(true);
   const [creatingPkg, setCreatingPkg] = useState(false);
   const [pkgError, setPkgError] = useState<string | null>(null);
+
+  const availableModalClasses = isAdmin
+    ? classes
+    : classes.filter((c) => assignments.some((a) => a.subject_id === pkgSubjectId && a.class_id === c.id));
 
   // Import Questions Modal state
   const [showImportModal, setShowImportModal] = useState(false);
@@ -117,23 +136,38 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (!activePkgId) return;
+    if (!activePkgId) {
+      setQuestions([]);
+      setHasLoaded(true);
+      return;
+    }
     setSearchQuery('');
     loadQuestions(activePkgId);
   }, [activePkgId]);
 
   useEffect(() => {
-    if (!showNewPkgModal && !showImportModal && !showEditor) return;
+    if (!showNewPkgModal && !showImportModal && !showEditor && confirmDeleteId === null) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setShowNewPkgModal(false);
-        setShowImportModal(false);
-        setShowEditor(false);
+        if (creatingPkg || importing || saving) return;
+        if (showNewPkgModal) {
+          setShowNewPkgModal(false);
+          return;
+        }
+        if (showImportModal) {
+          setShowImportModal(false);
+          return;
+        }
+        if (showEditor) {
+          setShowEditor(false);
+          return;
+        }
+        setConfirmDeleteId(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showNewPkgModal, showImportModal, showEditor]);
+  }, [showNewPkgModal, showImportModal, showEditor, creatingPkg, importing, saving, confirmDeleteId]);
 
   async function loadQuestions(pkgId: number) {
     setLoading(true);
@@ -169,16 +203,36 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!activePkgId) return;
+    if (!activePkgId || saving) return;
     setSaving(true);
     setError(null);
     try {
+      let syncedCount = 0;
       if (editingId) {
-        await teacherApi.updateQuestion(token, editingId, { questionText, options, correctOption, points });
+        const res = await teacherApi.updateQuestion(token, editingId, {
+          questionText,
+          options,
+          correctOption,
+          points,
+          syncSiblings,
+        });
+        syncedCount = res.syncedPackageCount || 0;
       } else {
-        await teacherApi.createQuestion(token, activePkgId, { questionText, options, correctOption, points });
+        const res = await teacherApi.createQuestion(token, activePkgId, {
+          questionText,
+          options,
+          correctOption,
+          points,
+          syncSiblings,
+        });
+        syncedCount = res.syncedPackageCount || 0;
       }
       setShowEditor(false);
+      if (syncedCount > 0) {
+        setBannerMsg(
+          `Soal tersimpan dan otomatis disinkronkan ke ${syncedCount} kelas paralel pada jadwal yang sama.`
+        );
+      }
       await loadQuestions(activePkgId);
       await onPackagesChanged();
     } catch (err) {
@@ -189,7 +243,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   }
 
   async function handleDelete(qId: number) {
-    if (!activePkgId) return;
+    if (!activePkgId || deletingId !== null) return;
     setDeletingId(qId);
     try {
       await teacherApi.deleteQuestion(token, qId);
@@ -204,10 +258,19 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   }
 
   function openNewPackageModal() {
+    if (!canCreatePackage) {
+      setError('Akun Anda belum memiliki penugasan mata pelajaran & kelas dari Admin Sekolah.');
+      return;
+    }
+    const initSubject = assignments[0]?.subject_id || subjects[0]?.id || 1;
+    const initClass =
+      classes.find((c) => assignments.some((a) => a.subject_id === initSubject && a.class_id === c.id))?.name ||
+      classes[0]?.name ||
+      '';
     setPkgError(null);
     setPkgTitle('');
-    setPkgSubjectId(subjects[0]?.id || 1);
-    setPkgClassName(classes[0]?.name || '8A');
+    setPkgSubjectId(initSubject);
+    setPkgClassName(initClass);
     setPkgDuration(60);
     setPkgToken(generateClientToken());
     setPkgShuffleQ(true);
@@ -218,6 +281,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   async function handleCreatePackage(e: React.FormEvent) {
     e.preventDefault();
+    if (creatingPkg) return;
     setPkgError(null);
     setCreatingPkg(true);
     try {
@@ -297,7 +361,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
 
   async function handleSubmitImportQuestions(e: React.FormEvent) {
     e.preventDefault();
-    if (!activePkgId) return;
+    if (!activePkgId || importing) return;
     if (!importText.trim()) {
       setImportError('Silakan tempel data soal, klik Muat Contoh, atau pilih file .CSV terlebih dahulu.');
       return;
@@ -308,9 +372,15 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       const res = await teacherApi.importQuestions(token, activePkgId, {
         rawText: importText,
         replaceExisting,
+        syncSiblings,
       });
       setImportResult(res);
       setImportModalTab('result');
+      if (res.summary.syncedPackageCount && res.summary.syncedPackageCount > 0) {
+        setBannerMsg(
+          `${res.summary.createdCount} soal diimpor dan disinkronkan ke ${res.summary.syncedPackageCount} kelas paralel.`
+        );
+      }
       await loadQuestions(activePkgId);
       await onPackagesChanged();
     } catch (err) {
@@ -351,17 +421,23 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
             onChange={(e) => onSelectPackage(Number(e.target.value))}
             className="w-full sm:w-64 px-3 py-2 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-800 truncate shrink-0"
           >
-            {packages.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title} ({p.class_name})
-              </option>
-            ))}
+            {editablePackages.length === 0 ? (
+              <option value="">Tidak ada paket Bank Soal</option>
+            ) : (
+              editablePackages.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title} ({p.class_name})
+                </option>
+              ))
+            )}
           </select>
 
           <button
             type="button"
+            disabled={!canCreatePackage}
             onClick={openNewPackageModal}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 cursor-pointer"
+            title={!canCreatePackage ? 'Hubungi Admin Sekolah untuk menetapkan penugasan mengajar Anda' : undefined}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
           >
             <FolderPlus className="w-4 h-4 text-blue-700" aria-hidden="true" />
             + Paket Baru
@@ -452,11 +528,46 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
         <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-xs font-medium text-red-700">{error}</div>
       )}
 
+      {parallelSiblings.length > 0 && (
+        <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-blue-900">
+          <div>
+            <span className="font-semibold">Jadwal Paralel Aktif:</span>{' '}
+            Paket ini terhubung dengan kelas{' '}
+            <strong>{parallelSiblings.map((s) => s.class_name).join(', ')}</strong>. Perubahan soal dapat disinkronkan otomatis selama kelas paralel belum memiliki sesi ujian berjalan.
+          </div>
+          <label className="inline-flex items-center gap-2 font-semibold whitespace-nowrap shrink-0 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={syncSiblings}
+              onChange={(e) => setSyncSiblings(e.target.checked)}
+              className="rounded border-blue-300 text-blue-700"
+            />
+            Sinkronkan otomatis
+          </label>
+        </div>
+      )}
+
       <div className={`min-h-[420px] transition-opacity duration-150 ${loading && hasLoaded ? 'opacity-60' : 'opacity-100'}`}>
         {!hasLoaded && loading ? (
           <div className="bg-white border border-slate-200 rounded-xl p-8 space-y-4">
             <div className="h-5 bg-slate-100 rounded w-1/3 animate-pulse" />
             <div className="h-16 bg-slate-100 rounded w-full animate-pulse" />
+          </div>
+        ) : !activePkgId ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-12 text-center min-h-[260px] flex flex-col items-center justify-center">
+            <BookOpen className="w-8 h-8 text-slate-400 mx-auto mb-3" />
+            <p className="text-sm font-semibold text-slate-800">Tidak ada paket Bank Soal yang dapat dikelola</p>
+            <p className="text-xs text-slate-500 mt-1 mb-5 max-w-md">
+              Paket yang hanya menugaskan Anda sebagai Guru Pengawas tidak membuka akses Bank Soal. Buat paket ujian baru untuk mata pelajaran Anda.
+            </p>
+            <button
+              type="button"
+              onClick={openNewPackageModal}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 whitespace-nowrap cursor-pointer"
+            >
+              <FolderPlus className="w-4 h-4" />
+              Buat Paket Ujian Baru
+            </button>
           </div>
         ) : questions.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-xl p-12 text-center min-h-[260px] flex flex-col items-center justify-center">
@@ -513,8 +624,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
+                    disabled={deletingId === q.id}
                     onClick={() => openEditModal(q)}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                     Ubah
@@ -532,8 +644,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                       </button>
                       <button
                         type="button"
+                        disabled={deletingId === q.id}
                         onClick={() => setConfirmDeleteId(null)}
-                        className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                        className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                       >
                         Batal
                       </button>
@@ -541,8 +654,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                   ) : (
                     <button
                       type="button"
+                      disabled={deletingId === q.id}
                       onClick={() => setConfirmDeleteId(q.id)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-200 rounded-lg hover:bg-red-50 cursor-pointer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       Hapus
@@ -589,9 +703,14 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       {/* Modal Tambah Paket Baru */}
       {showNewPkgModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Tambah Paket Ujian Baru"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowNewPkgModal(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !creatingPkg && !pkgTitle.trim()) {
+              setShowNewPkgModal(false);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6 max-h-[92vh] overflow-y-auto">
@@ -604,8 +723,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               </div>
               <button
                 type="button"
+                disabled={creatingPkg}
                 onClick={() => setShowNewPkgModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -635,7 +755,18 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Mata Pelajaran</label>
                   <select
                     value={pkgSubjectId}
-                    onChange={(e) => setPkgSubjectId(Number(e.target.value))}
+                    onChange={(e) => {
+                      const nextSub = Number(e.target.value);
+                      setPkgSubjectId(nextSub);
+                      if (!isAdmin) {
+                        const validClasses = classes.filter((c) =>
+                          assignments.some((a) => a.subject_id === nextSub && a.class_id === c.id)
+                        );
+                        if (!validClasses.some((c) => c.name === pkgClassName) && validClasses[0]) {
+                          setPkgClassName(validClasses[0].name);
+                        }
+                      }
+                    }}
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
                   >
                     {subjects.map((s) => (
@@ -647,23 +778,40 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Kelas (misal: 7A, 8A, 8B)</label>
-                  <input
-                    type="text"
-                    required
-                    list="examflow-class-list"
-                    value={pkgClassName}
-                    onChange={(e) => setPkgClassName(e.target.value.toUpperCase())}
-                    placeholder="7A / 8A / 8B"
-                    className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg font-mono uppercase"
-                  />
-                  <datalist id="examflow-class-list">
-                    {classes.map((c) => (
-                      <option key={c.id} value={c.name} />
-                    ))}
-                    <option value="7A" />
-                    <option value="7B" />
-                  </datalist>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    {isAdmin ? 'Kelas (misal: 7A, 8A, 8B)' : 'Kelas Penugasan'}
+                  </label>
+                  {isAdmin ? (
+                    <>
+                      <input
+                        type="text"
+                        required
+                        list="examflow-class-list"
+                        value={pkgClassName}
+                        onChange={(e) => setPkgClassName(e.target.value.toUpperCase())}
+                        placeholder="7A / 8A / 8B"
+                        className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg font-mono uppercase"
+                      />
+                      <datalist id="examflow-class-list">
+                        {classes.map((c) => (
+                          <option key={c.id} value={c.name} />
+                        ))}
+                      </datalist>
+                    </>
+                  ) : (
+                    <select
+                      required
+                      value={pkgClassName}
+                      onChange={(e) => setPkgClassName(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                    >
+                      {availableModalClasses.map((c) => (
+                        <option key={c.id} value={c.name}>
+                          Kelas {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -738,8 +886,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={creatingPkg}
                   onClick={() => setShowNewPkgModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
@@ -759,9 +908,14 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       {/* Modal Import Soal (stabil dengan tinggi konsisten, tab, dan footer tetap) */}
       {showImportModal && activePkg && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Import Soal ke Paket Ujian"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowImportModal(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !importing && !importText.trim()) {
+              setShowImportModal(false);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl h-[84vh] max-h-[720px] min-h-[520px] flex flex-col overflow-hidden">
@@ -774,8 +928,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               </div>
               <button
                 type="button"
+                disabled={importing}
                 onClick={() => setShowImportModal(false)}
-                className="text-slate-400 hover:text-slate-700 shrink-0 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 shrink-0 cursor-pointer"
                 aria-label="Tutup modal import soal"
               >
                 <X className="w-5 h-5" />
@@ -919,6 +1074,15 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                       />
                       Ganti seluruh soal lama pada paket ini dengan daftar soal hasil impor
                     </label>
+
+                    {replaceExisting && questions.length > 0 && (
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+                        <span>
+                          Perhatian: <strong>{questions.length} soal</strong> yang sudah ada di paket ini akan dihapus permanen dan digantikan oleh hasil impor di atas.
+                        </span>
+                      </div>
+                    )}
                   </form>
                 </div>
               ) : (
@@ -989,8 +1153,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               <div className="flex items-center gap-3 shrink-0">
                 <button
                   type="button"
+                  disabled={importing}
                   onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   {importResult ? 'Tutup' : 'Batal'}
                 </button>
@@ -1012,9 +1177,20 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       {/* Modal Tambah / Edit Soal Tunggal */}
       {showEditor && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingId ? 'Ubah Soal Ujian' : 'Tambah Soal Baru'}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowEditor(false);
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget || saving) return;
+            const orig = editingId ? questions.find((item) => item.id === editingId) : null;
+            const isDirty = orig
+              ? questionText !== orig.question_text ||
+                correctOption !== orig.correct_option ||
+                points !== orig.points ||
+                options.some((o, i) => o.text !== (orig.options[i]?.text || ''))
+              : Boolean(questionText.trim() || options.some((o) => o.text.trim()));
+            if (!isDirty) setShowEditor(false);
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
@@ -1022,7 +1198,12 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               <h3 className="font-display text-lg font-bold text-slate-900">
                 {editingId ? 'Ubah Soal Ujian' : 'Tambah Soal Baru'}
               </h3>
-              <button type="button" onClick={() => setShowEditor(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setShowEditor(false)}
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1085,8 +1266,9 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => setShowEditor(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>

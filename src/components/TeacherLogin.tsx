@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, Lock, Mail, ArrowRight, Smartphone, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, Lock, UserCheck, ArrowRight, Smartphone, Eye, EyeOff } from 'lucide-react';
 import { teacherApi } from '../api';
 import type { TeacherProfile } from '../types';
 
@@ -9,7 +9,7 @@ interface TeacherLoginProps {
 }
 
 export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStudentPortal }) => {
-  const [email, setEmail] = useState('');
+  const [nip, setNip] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -17,10 +17,11 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return;
     setError(null);
     setLoading(true);
     try {
-      const res = await teacherApi.login(email, password);
+      const res = await teacherApi.login(nip, password);
       onSuccess(res.token, res.teacher);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal masuk ke sistem.');
@@ -90,7 +91,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
             <div className="mt-8 pt-6 border-t border-slate-100">
               <p className="text-xs font-semibold text-slate-700 mb-1.5">Akses Resmi Pengawas & Guru</p>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Masuk menggunakan akun guru atau admin semester yang telah ditetapkan oleh operator sekolah. Segera perbarui kata sandi melalui menu <span className="font-semibold text-slate-700">Ubah Kata Sandi</span> di dasbor setelah login pertama.
+                Masuk menggunakan NIP, NIY, atau ID akun yang telah ditetapkan oleh operator sekolah. Segera perbarui kata sandi melalui menu <span className="font-semibold text-slate-700">Ubah Kata Sandi</span> di dasbor setelah login pertama.
               </p>
             </div>
           </div>
@@ -99,7 +100,7 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
           <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-8 flex flex-col justify-center">
             <h2 className="font-display text-xl font-bold text-slate-900 mb-1">Masuk Dasbor Guru</h2>
             <p className="text-sm text-slate-500 mb-6">
-              Gunakan akun guru terdaftar untuk mengelola paket ujian dan memantau sesi siswa.
+              Gunakan NIP atau ID akun terdaftar untuk mengelola paket ujian dan memantau sesi siswa.
             </p>
 
             {error && (
@@ -110,19 +111,20 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({ onSuccess, onOpenStu
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label htmlFor="teacher-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Email Guru
+                <label htmlFor="teacher-nip" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  NIP / ID Login
                 </label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
+                  <UserCheck className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
                   <input
-                    id="teacher-email"
-                    type="email"
+                    id="teacher-nip"
+                    type="text"
                     required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
-                    placeholder="nama@examflow.sch.id"
+                    autoComplete="username"
+                    value={nip}
+                    onChange={(e) => setNip(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2.5 text-sm font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+                    placeholder="Contoh: 252500 atau NIP / admin"
                   />
                 </div>
               </div>

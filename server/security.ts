@@ -108,7 +108,7 @@ export function decryptTextWithKey(cipherText: string, keyMaterial: string): str
 
 export interface TeacherTokenClaims {
   teacherId: number;
-  email: string;
+  nip: string;
   name: string;
   role: 'TEACHER' | 'ADMIN';
   exp: number;

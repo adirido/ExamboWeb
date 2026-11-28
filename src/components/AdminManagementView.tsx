@@ -4,7 +4,6 @@ import {
   Plus,
   Search,
   Pencil,
-  KeyRound,
   Trash2,
   X,
   Copy,
@@ -39,16 +38,16 @@ interface AdminManagementViewProps {
 }
 
 const TEACHER_CSV_SAMPLE = [
-  'Ahmad Fauzi,ahmad.fauzi@examflow.sch.id,TEACHER,',
-  'Dewi Kartika,dewi.kartika@examflow.sch.id,TEACHER,guru2026',
-  'Rizky Pratama,rizky.pratama@examflow.sch.id,ADMIN,',
+  'Ahmad Fauzi,198805122015031002,TEACHER,',
+  'Dewi Kartika,NIY-202602,TEACHER,guru2026',
+  'Rizky Pratama,admin.sekolah,ADMIN,',
 ].join('\n');
 
 const TEACHER_CSV_TEMPLATE = [
-  'Nama Lengkap,Email,Role,Password (Opsional)',
-  'Ahmad Fauzi,ahmad.fauzi@examflow.sch.id,TEACHER,',
-  'Dewi Kartika,dewi.kartika@examflow.sch.id,TEACHER,guru2026',
-  'Rizky Pratama,rizky.pratama@examflow.sch.id,ADMIN,',
+  'Nama Lengkap,NIP / ID Login,Role,Password (Opsional)',
+  'Ahmad Fauzi,198805122015031002,TEACHER,',
+  'Dewi Kartika,NIY-202602,TEACHER,guru2026',
+  'Rizky Pratama,admin.sekolah,ADMIN,',
 ].join('\n');
 
 export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
@@ -68,26 +67,24 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   const [teacherFeedback, setTeacherFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [confirmDeleteTeacherId, setConfirmDeleteTeacherId] = useState<number | null>(null);
   const [busyTeacherId, setBusyTeacherId] = useState<number | null>(null);
+  const [confirmRemoveAssignId, setConfirmRemoveAssignId] = useState<number | null>(null);
+  const [busyAssignId, setBusyAssignId] = useState<number | null>(null);
 
   // Add / Edit Teacher Modal
   const [showTeacherModal, setShowTeacherModal] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState<TeacherAccountRecord | null>(null);
   const [formName, setFormName] = useState('');
-  const [formEmail, setFormEmail] = useState('');
+  const [formNip, setFormNip] = useState('');
   const [formRole, setFormRole] = useState<'TEACHER' | 'ADMIN'>('TEACHER');
   const [formPassword, setFormPassword] = useState('');
   const [showFormPassword, setShowFormPassword] = useState(false);
   const [teacherModalError, setTeacherModalError] = useState<string | null>(null);
   const [savingTeacher, setSavingTeacher] = useState(false);
 
-  // Reset Password Modal
-  const [resetTarget, setResetTarget] = useState<TeacherAccountRecord | null>(null);
-  const [customResetPassword, setCustomResetPassword] = useState('');
-  const [resettingPassword, setResettingPassword] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
+  // Credential reveal modal (for newly created teacher)
   const [revealedCredential, setRevealedCredential] = useState<{
     name: string;
-    email: string;
+    nip: string;
     password: string;
     title: string;
   } | null>(null);
@@ -124,7 +121,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   const [editingSubject, setEditingSubject] = useState<SubjectItem | null>(null);
   const [subjCode, setSubjCode] = useState('');
   const [subjName, setSubjName] = useState('');
-  const [subjDesc, setSubjDesc] = useState('');
   const [subjectModalError, setSubjectModalError] = useState<string | null>(null);
   const [savingSubject, setSavingSubject] = useState(false);
 
@@ -209,33 +205,75 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   useEffect(() => {
     const anyModalOpen =
       showTeacherModal ||
-      Boolean(resetTarget) ||
       Boolean(revealedCredential) ||
       Boolean(assignTarget) ||
       showImportModal ||
       showSubjectModal ||
       showClassModal;
-    if (!anyModalOpen) return;
+    const anyInlineConfirm =
+      confirmDeleteTeacherId !== null ||
+      confirmDeleteSubjectId !== null ||
+      confirmDeleteClassId !== null ||
+      confirmRemoveAssignId !== null;
+    if (!anyModalOpen && !anyInlineConfirm) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setShowTeacherModal(false);
-        setResetTarget(null);
-        setRevealedCredential(null);
-        setAssignTarget(null);
-        setShowImportModal(false);
-        setShowSubjectModal(false);
-        setShowClassModal(false);
+        if (savingTeacher || savingAssign || importing || savingSubject || savingClass) return;
+        if (showTeacherModal) {
+          setShowTeacherModal(false);
+          return;
+        }
+        if (revealedCredential) {
+          setRevealedCredential(null);
+          return;
+        }
+        if (assignTarget) {
+          setAssignTarget(null);
+          return;
+        }
+        if (showImportModal) {
+          setShowImportModal(false);
+          return;
+        }
+        if (showSubjectModal) {
+          setShowSubjectModal(false);
+          return;
+        }
+        if (showClassModal) {
+          setShowClassModal(false);
+          return;
+        }
+        setConfirmDeleteTeacherId(null);
+        setConfirmDeleteSubjectId(null);
+        setConfirmDeleteClassId(null);
+        setConfirmRemoveAssignId(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showTeacherModal, resetTarget, revealedCredential, assignTarget, showImportModal, showSubjectModal, showClassModal]);
+  }, [
+    showTeacherModal,
+    revealedCredential,
+    assignTarget,
+    showImportModal,
+    showSubjectModal,
+    showClassModal,
+    savingTeacher,
+    savingAssign,
+    importing,
+    savingSubject,
+    savingClass,
+    confirmDeleteTeacherId,
+    confirmDeleteSubjectId,
+    confirmDeleteClassId,
+    confirmRemoveAssignId,
+  ]);
 
   // --- Teacher CRUD Handlers ---
   function openCreateTeacherModal() {
     setEditingTeacher(null);
     setFormName('');
-    setFormEmail('');
+    setFormNip('');
     setFormRole('TEACHER');
     setFormPassword('');
     setShowFormPassword(false);
@@ -246,7 +284,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   function openEditTeacherModal(t: TeacherAccountRecord) {
     setEditingTeacher(t);
     setFormName(t.name);
-    setFormEmail(t.email);
+    setFormNip(t.nip);
     setFormRole(t.role);
     setFormPassword('');
     setShowFormPassword(false);
@@ -256,13 +294,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
   async function handleSaveTeacher(e: React.FormEvent) {
     e.preventDefault();
+    if (savingTeacher) return;
     setTeacherModalError(null);
     setSavingTeacher(true);
     try {
+      const normalizedNip = formNip.trim().toLowerCase();
       if (editingTeacher) {
         await teacherApi.updateAdminTeacher(token, editingTeacher.id, {
           name: formName.trim(),
-          email: formEmail.trim().toLowerCase(),
+          nip: normalizedNip,
           role: formRole,
           ...(formPassword.trim() ? { newPassword: formPassword } : {}),
         });
@@ -278,14 +318,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
         }
         await teacherApi.createAdminTeacher(token, {
           name: formName.trim(),
-          email: formEmail.trim().toLowerCase(),
+          nip: normalizedNip,
           password: formPassword,
           role: formRole,
         });
         setShowTeacherModal(false);
         setRevealedCredential({
           name: formName.trim(),
-          email: formEmail.trim().toLowerCase(),
+          nip: normalizedNip,
           password: formPassword,
           title: 'Akun Guru Baru Berhasil Dibuat',
         });
@@ -299,6 +339,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   }
 
   async function handleDeleteTeacher(id: number) {
+    if (busyTeacherId !== null) return;
     setBusyTeacherId(id);
     setTeacherFeedback(null);
     try {
@@ -316,40 +357,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     }
   }
 
-  // --- Password Reset Handlers ---
-  function openResetPasswordModal(t: TeacherAccountRecord) {
-    setResetTarget(t);
-    setCustomResetPassword('');
-    setResetError(null);
-  }
-
-  async function handleResetPassword(e: React.FormEvent) {
-    e.preventDefault();
-    if (!resetTarget) return;
-    const trimmed = customResetPassword.trim();
-    if (trimmed && (trimmed.length < 6 || trimmed.length > 128)) {
-      setResetError('Kata sandi khusus harus terdiri dari 6–128 karakter.');
-      return;
-    }
-
-    setResettingPassword(true);
-    setResetError(null);
-    try {
-      const res = await teacherApi.resetAdminTeacherPassword(token, resetTarget.id, trimmed || undefined);
-      setResetTarget(null);
-      setRevealedCredential({
-        name: res.name,
-        email: res.email,
-        password: res.newPassword,
-        title: 'Kata Sandi Guru Berhasil Direset',
-      });
-    } catch (err) {
-      setResetError(err instanceof Error ? err.message : 'Gagal mereset kata sandi guru.');
-    } finally {
-      setResettingPassword(false);
-    }
-  }
-
   // --- Assignment Handlers ---
   function openAssignModal(t: TeacherAccountRecord) {
     setAssignTarget(t);
@@ -360,7 +367,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
   async function handleAddAssignment(e: React.FormEvent) {
     e.preventDefault();
-    if (!assignTarget) return;
+    if (!assignTarget || savingAssign) return;
     setSavingAssign(true);
     setAssignError(null);
     try {
@@ -380,9 +387,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   }
 
   async function handleRemoveAssignment(assignmentId: number) {
+    if (busyAssignId !== null) return;
+    setBusyAssignId(assignmentId);
     setTeacherFeedback(null);
     try {
       await teacherApi.deleteTeacherAssignment(token, assignmentId);
+      setConfirmRemoveAssignId(null);
       await loadTeachers();
       await onContextChanged();
     } catch (err) {
@@ -390,6 +400,8 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
         type: 'err',
         text: err instanceof Error ? err.message : 'Gagal menghapus penugasan.',
       });
+    } finally {
+      setBusyAssignId(null);
     }
   }
 
@@ -431,6 +443,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
   async function handleImportTeachersSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (importing) return;
     if (!importText.trim()) {
       setImportError('Tempel data guru atau unggah file CSV terlebih dahulu.');
       return;
@@ -455,9 +468,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   function handleCopyBatchCredentials() {
     if (!importResult || importResult.importedCredentials.length === 0) return;
     const text = importResult.importedCredentials
-      .map((c) => `${c.name}\t${c.email}\t${c.role}\t${c.password}`)
+      .map((c) => `${c.name}\t${c.nip}\t${c.role}\t${c.password}`)
       .join('\n');
-    navigator.clipboard?.writeText(`Nama\tEmail\tRole\tKata Sandi\n${text}`);
+    navigator.clipboard?.writeText(`Nama\tNIP / ID Login\tRole\tKata Sandi\n${text}`);
     setCopiedBatchCreds(true);
     setTimeout(() => setCopiedBatchCreds(false), 1800);
   }
@@ -465,9 +478,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   function handleDownloadBatchCredentialsCsv() {
     if (!importResult || importResult.importedCredentials.length === 0) return;
     const rows = [
-      'Nama Lengkap,Email,Role,Kata Sandi,Status',
+      'Nama Lengkap,NIP / ID Login,Role,Kata Sandi,Status',
       ...importResult.importedCredentials.map((c) =>
-        [c.name, c.email, c.role, c.password, c.action]
+        [c.name, c.nip, c.role, c.password, c.action]
           .map((v) => `"${String(v).replace(/"/g, '""')}"`)
           .join(',')
       ),
@@ -488,7 +501,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     setEditingSubject(null);
     setSubjCode('');
     setSubjName('');
-    setSubjDesc('');
     setSubjectModalError(null);
     setShowSubjectModal(true);
   }
@@ -497,13 +509,13 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     setEditingSubject(subj);
     setSubjCode(subj.code);
     setSubjName(subj.name);
-    setSubjDesc(subj.description || '');
     setSubjectModalError(null);
     setShowSubjectModal(true);
   }
 
   async function handleSaveSubject(e: React.FormEvent) {
     e.preventDefault();
+    if (savingSubject) return;
     setSubjectModalError(null);
     setSavingSubject(true);
     try {
@@ -511,14 +523,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
         await teacherApi.updateSubject(token, editingSubject.id, {
           code: subjCode,
           name: subjName,
-          description: subjDesc,
+          description: editingSubject.description || '',
         });
         setSubjectFeedback({ type: 'ok', text: `Mata pelajaran "${subjName.trim()}" berhasil diperbarui.` });
       } else {
         await teacherApi.createSubject(token, {
           code: subjCode,
           name: subjName,
-          description: subjDesc,
+          description: '',
         });
         setSubjectFeedback({ type: 'ok', text: `Mata pelajaran "${subjName.trim()}" berhasil ditambahkan.` });
       }
@@ -534,6 +546,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   }
 
   async function handleDeleteSubject(subjId: number) {
+    if (busySubjectId !== null) return;
     setBusySubjectId(subjId);
     setSubjectFeedback(null);
     try {
@@ -589,6 +602,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
   async function handleSaveClass(e: React.FormEvent) {
     e.preventDefault();
+    if (savingClass) return;
     setClassModalError(null);
     setSavingClass(true);
     try {
@@ -618,6 +632,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
   }
 
   async function handleDeleteClass(clsId: number) {
+    if (busyClassId !== null) return;
     setBusyClassId(clsId);
     setClassFeedback(null);
     try {
@@ -641,7 +656,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
     if (roleFilter !== 'ALL' && t.role !== roleFilter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      return t.name.toLowerCase().includes(q) || t.email.toLowerCase().includes(q);
+      return t.name.toLowerCase().includes(q) || t.nip.toLowerCase().includes(q);
     }
     return true;
   });
@@ -738,7 +753,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Cari nama atau email guru..."
+                  placeholder="Cari nama atau NIP / ID guru..."
                   className="w-full pl-9 pr-7 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
                 {searchQuery && (
@@ -817,7 +832,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                      <th className="py-3 px-4">Nama &amp; Email</th>
+                      <th className="py-3 px-4">Nama &amp; NIP / ID</th>
                       <th className="py-3 px-4">Peran</th>
                       <th className="py-3 px-4">Penugasan Mapel &amp; Kelas</th>
                       <th className="py-3 px-4 text-right">Paket Ujian</th>
@@ -840,7 +855,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] font-mono text-slate-500 mt-0.5">{t.email}</div>
+                            <div className="text-[11px] font-mono text-slate-500 mt-0.5">{t.nip}</div>
                           </td>
 
                           <td className="py-3.5 px-4 whitespace-nowrap">
@@ -866,14 +881,37 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                     <span>
                                       {a.subject_code} · {a.class_name}
                                     </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoveAssignment(a.id)}
-                                      className="text-slate-400 hover:text-red-600 cursor-pointer"
-                                      title="Hapus penugasan"
-                                    >
-                                      <X className="w-3 h-3" />
-                                    </button>
+                                    {confirmRemoveAssignId === a.id ? (
+                                      <span className="inline-flex items-center gap-1 ml-1 pl-1 border-l border-slate-300">
+                                        <button
+                                          type="button"
+                                          disabled={busyAssignId === a.id}
+                                          onClick={() => handleRemoveAssignment(a.id)}
+                                          className="px-1.5 py-0.5 text-[10px] font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded cursor-pointer"
+                                        >
+                                          {busyAssignId === a.id ? '...' : 'Hapus'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={busyAssignId === a.id}
+                                          onClick={() => setConfirmRemoveAssignId(null)}
+                                          className="px-1 py-0.5 text-[10px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
+                                        >
+                                          Batal
+                                        </button>
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        disabled={busyAssignId === a.id}
+                                        onClick={() => setConfirmRemoveAssignId(a.id)}
+                                        className="text-slate-400 hover:text-red-600 disabled:opacity-50 cursor-pointer"
+                                        title="Hapus penugasan"
+                                        aria-label={`Hapus penugasan ${a.subject_code} ${a.class_name}`}
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    )}
                                   </span>
                                 ))
                               )}
@@ -900,14 +938,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                   type="button"
                                   disabled={isBusy}
                                   onClick={() => handleDeleteTeacher(t.id)}
-                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded cursor-pointer"
                                 >
-                                  Ya
+                                  {isBusy ? '...' : 'Ya'}
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => setConfirmDeleteTeacherId(null)}
-                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                                 >
                                   Batal
                                 </button>
@@ -916,27 +955,20 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                               <div className="inline-flex items-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => openEditTeacherModal(t)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-md cursor-pointer"
                                   title="Edit Data Guru"
                                 >
                                   <Pencil className="w-3 h-3" />
                                   Edit
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openResetPasswordModal(t)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-md cursor-pointer"
-                                  title="Reset Kata Sandi"
-                                >
-                                  <KeyRound className="w-3 h-3" />
-                                  Reset Sandi
-                                </button>
                                 {!isSelf && (
                                   <button
                                     type="button"
+                                    disabled={isBusy}
                                     onClick={() => setConfirmDeleteTeacherId(t.id)}
-                                    className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                    className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors cursor-pointer"
                                     title="Hapus Akun Guru"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -1012,7 +1044,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                     <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                       <th className="py-3 px-4">Kode</th>
                       <th className="py-3 px-4">Nama Mata Pelajaran</th>
-                      <th className="py-3 px-4">Keterangan</th>
                       <th className="py-3 px-4 text-right">Paket Ujian</th>
                       <th className="py-3 px-4 text-right">Total Soal</th>
                       <th className="py-3 px-4 text-right">Aksi</th>
@@ -1029,7 +1060,6 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                             {subj.code}
                           </td>
                           <td className="py-3.5 px-4 font-semibold text-slate-900">{subj.name}</td>
-                          <td className="py-3.5 px-4 text-slate-500">{subj.description || '—'}</td>
                           <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-800 tabular-nums">
                             {pkgCount}
                           </td>
@@ -1044,14 +1074,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                   type="button"
                                   disabled={isBusy}
                                   onClick={() => handleDeleteSubject(subj.id)}
-                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded cursor-pointer"
                                 >
-                                  Ya
+                                  {isBusy ? '...' : 'Ya'}
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => setConfirmDeleteSubjectId(null)}
-                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                                 >
                                   Batal
                                 </button>
@@ -1060,15 +1091,16 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                               <div className="inline-flex items-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => openEditSubjectModal(subj)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-md cursor-pointer"
                                 >
                                   <Pencil className="w-3 h-3" />
                                   Edit
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={pkgCount > 0}
+                                  disabled={pkgCount > 0 || isBusy}
                                   onClick={() => setConfirmDeleteSubjectId(subj.id)}
                                   className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
                                   title={
@@ -1182,14 +1214,15 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                                   type="button"
                                   disabled={isBusy}
                                   onClick={() => handleDeleteClass(cls.id)}
-                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 rounded cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded cursor-pointer"
                                 >
-                                  Ya
+                                  {isBusy ? '...' : 'Ya'}
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => setConfirmDeleteClassId(null)}
-                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                  className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                                 >
                                   Batal
                                 </button>
@@ -1198,15 +1231,16 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                               <div className="inline-flex items-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={isBusy}
                                   onClick={() => openEditClassModal(cls)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-md cursor-pointer"
                                 >
                                   <Pencil className="w-3 h-3" />
                                   Edit
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={isInUse}
+                                  disabled={isInUse || isBusy}
                                   onClick={() => setConfirmDeleteClassId(cls.id)}
                                   className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
                                   title={
@@ -1234,9 +1268,19 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* Modal Tambah / Edit Guru */}
       {showTeacherModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingTeacher ? 'Edit Akun Guru' : 'Tambah Akun Guru Baru'}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowTeacherModal(false);
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget || savingTeacher) return;
+            const isDirty = editingTeacher
+              ? formName.trim() !== editingTeacher.name ||
+                formNip.trim().toLowerCase() !== editingTeacher.nip ||
+                formRole !== editingTeacher.role ||
+                Boolean(formPassword)
+              : Boolean(formName.trim() || formNip.trim() || formPassword);
+            if (!isDirty) setShowTeacherModal(false);
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
@@ -1246,8 +1290,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </h3>
               <button
                 type="button"
+                disabled={savingTeacher}
                 onClick={() => setShowTeacherModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1273,15 +1318,18 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Email Login Guru</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">NIP / ID Login</label>
                 <input
-                  type="email"
+                  type="text"
                   required
-                  value={formEmail}
-                  onChange={(e) => setFormEmail(e.target.value)}
-                  placeholder="nama.guru@sekolah.sch.id"
+                  value={formNip}
+                  onChange={(e) => setFormNip(e.target.value)}
+                  placeholder="Contoh: 198504122010011001, 252500, atau admin"
                   className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-blue-600"
                 />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Fleksibel: dapat diisi NIP, NIY, kode pegawai, atau ID khusus Admin (tanpa spasi).
+                </p>
               </div>
 
               <div>
@@ -1324,8 +1372,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={savingTeacher}
                   onClick={() => setShowTeacherModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
@@ -1342,78 +1391,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
         </div>
       )}
 
-      {/* Modal Reset Kata Sandi Guru */}
-      {resetTarget && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setResetTarget(null);
-          }}
-        >
-          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-display text-base font-bold text-slate-900">Reset Kata Sandi Guru</h3>
-              <button
-                type="button"
-                onClick={() => setResetTarget(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg mb-4 text-xs">
-              <div className="font-semibold text-slate-900">{resetTarget.name}</div>
-              <div className="font-mono text-slate-500 mt-0.5">{resetTarget.email}</div>
-            </div>
-
-            {resetError && (
-              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs font-medium text-red-700">
-                {resetError}
-              </div>
-            )}
-
-            <form onSubmit={handleResetPassword} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Kata Sandi Baru (Opsional — kosongkan untuk acak otomatis 8 karakter)
-                </label>
-                <input
-                  type="text"
-                  maxLength={128}
-                  value={customResetPassword}
-                  onChange={(e) => setCustomResetPassword(e.target.value)}
-                  placeholder="Kosongkan untuk generate otomatis"
-                  className="w-full px-3.5 py-2 text-sm font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setResetTarget(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={resettingPassword}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg cursor-pointer"
-                >
-                  {resettingPassword ? 'Memproses...' : 'Reset Kata Sandi'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Kredensial Guru Baru / Hasil Reset */}
+      {/* Modal Kredensial Guru Baru */}
       {revealedCredential && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={revealedCredential.title}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+          onMouseDown={(e) => {
             if (e.target === e.currentTarget) setRevealedCredential(null);
           }}
         >
@@ -1429,8 +1414,8 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                 <div className="font-semibold text-slate-900">{revealedCredential.name}</div>
               </div>
               <div>
-                <div className="text-[11px] text-slate-500">Email</div>
-                <div className="font-mono text-slate-800">{revealedCredential.email}</div>
+                <div className="text-[11px] text-slate-500">NIP / ID Login</div>
+                <div className="font-mono text-slate-800">{revealedCredential.nip}</div>
               </div>
               <div>
                 <div className="text-[11px] text-slate-500">Kata Sandi</div>
@@ -1445,7 +1430,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                 type="button"
                 onClick={() => {
                   navigator.clipboard?.writeText(
-                    `Email: ${revealedCredential.email}\nKata Sandi: ${revealedCredential.password}`
+                    `NIP / ID Login: ${revealedCredential.nip}\nKata Sandi: ${revealedCredential.password}`
                   );
                   setCopiedCredential(true);
                   setTimeout(() => setCopiedCredential(false), 1800);
@@ -1470,9 +1455,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* Modal Penugasan Mapel & Kelas */}
       {assignTarget && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Tugaskan Mapel dan Kelas"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setAssignTarget(null);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !savingAssign) setAssignTarget(null);
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
@@ -1483,8 +1471,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </div>
               <button
                 type="button"
+                disabled={savingAssign}
                 onClick={() => setAssignTarget(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1530,8 +1519,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={savingAssign}
                   onClick={() => setAssignTarget(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
@@ -1551,9 +1541,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* Modal Import CSV Guru */}
       {showImportModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Import Akun Guru via CSV"
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowImportModal(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !importing && !importText.trim()) {
+              setShowImportModal(false);
+            }
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-xl">
@@ -1569,8 +1564,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </div>
               <button
                 type="button"
+                disabled={importing}
                 onClick={() => setShowImportModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-50 rounded-lg hover:bg-slate-100 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1609,7 +1605,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                   <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 space-y-2">
                     <div className="font-semibold text-slate-800">Format Kolom (koma / titik-koma / tab Excel):</div>
                     <div className="font-mono text-[11px] bg-white border border-slate-200 rounded px-3 py-2 text-slate-700">
-                      Nama Lengkap,Email,Role,Password (Opsional)
+                      Nama Lengkap,NIP / ID Login,Role,Password (Opsional)
                     </div>
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <button
@@ -1665,7 +1661,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                       rows={7}
                       value={importText}
                       onChange={(e) => setImportText(e.target.value)}
-                      placeholder={'Ahmad Fauzi,ahmad.fauzi@examflow.sch.id,TEACHER,\nDewi Kartika,dewi.kartika@examflow.sch.id,TEACHER,guru2026'}
+                      placeholder={'Ahmad Fauzi,198805122015031002,TEACHER,\nDewi Kartika,NIY-202602,TEACHER,guru2026'}
                       className="w-full px-3.5 py-2.5 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                     />
                   </div>
@@ -1677,7 +1673,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                       onChange={(e) => setUpdateExisting(e.target.checked)}
                       className="rounded border-slate-300 text-blue-700"
                     />
-                    Perbarui nama/peran jika email guru sudah terdaftar (kata sandi hanya diubah jika kolom password diisi)
+                    Perbarui nama/peran jika NIP / ID guru sudah terdaftar (kata sandi hanya diubah jika kolom password diisi)
                   </label>
                 </form>
               ) : (
@@ -1723,7 +1719,7 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                             <thead>
                               <tr className="border-b border-slate-200 bg-white text-[11px] font-semibold text-slate-500">
                                 <th className="py-2 px-4">Nama</th>
-                                <th className="py-2 px-4">Email</th>
+                                <th className="py-2 px-4">NIP / ID Login</th>
                                 <th className="py-2 px-4">Role</th>
                                 <th className="py-2 px-4">Kata Sandi</th>
                                 <th className="py-2 px-4 text-right">Status</th>
@@ -1731,9 +1727,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {importResult.importedCredentials.map((c) => (
-                                <tr key={`${c.email}-${c.action}`}>
+                                <tr key={`${c.nip}-${c.action}`}>
                                   <td className="py-2 px-4 font-semibold text-slate-900">{c.name}</td>
-                                  <td className="py-2 px-4 font-mono text-slate-600">{c.email}</td>
+                                  <td className="py-2 px-4 font-mono text-slate-600">{c.nip}</td>
                                   <td className="py-2 px-4 text-slate-700">{c.role}</td>
                                   <td className="py-2 px-4 font-mono font-bold text-blue-700">{c.password}</td>
                                   <td className="py-2 px-4 text-right text-[11px] font-semibold text-slate-600">
@@ -1751,8 +1747,8 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                       <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-1">
                         <div className="font-semibold">Baris Duplikat Dilewati:</div>
                         {importResult.skipped.map((s) => (
-                          <div key={`${s.lineNumber}-${s.email}`} className="font-mono text-[11px]">
-                            Baris {s.lineNumber} ({s.email}): {s.reason}
+                          <div key={`${s.lineNumber}-${s.nip}`} className="font-mono text-[11px]">
+                            Baris {s.lineNumber} ({s.nip}): {s.reason}
                           </div>
                         ))}
                       </div>
@@ -1775,13 +1771,14 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
 
             <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
               <span className="text-[11px] text-slate-500">
-                Format: Nama Lengkap, Email, Role (TEACHER/ADMIN), Password (opsional)
+                Format: Nama Lengkap, NIP / ID Login, Role (TEACHER/ADMIN), Password (opsional)
               </span>
               <div className="flex items-center gap-3 shrink-0">
                 <button
                   type="button"
+                  disabled={importing}
                   onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   {importResult ? 'Tutup' : 'Batal'}
                 </button>
@@ -1803,9 +1800,16 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* Modal Tambah / Edit Mata Pelajaran */}
       {showSubjectModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingSubject ? 'Edit Mata Pelajaran' : 'Tambah Mata Pelajaran Baru'}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowSubjectModal(false);
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget || savingSubject) return;
+            const isDirty = editingSubject
+              ? subjCode !== editingSubject.code || subjName !== editingSubject.name
+              : Boolean(subjCode.trim() || subjName.trim());
+            if (!isDirty) setShowSubjectModal(false);
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
@@ -1815,8 +1819,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </h3>
               <button
                 type="button"
+                disabled={savingSubject}
                 onClick={() => setShowSubjectModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1856,22 +1861,12 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Keterangan (Opsional)</label>
-                <input
-                  type="text"
-                  value={subjDesc}
-                  onChange={(e) => setSubjDesc(e.target.value)}
-                  placeholder="Contoh: Mata pelajaran wajib kelas 7–9"
-                  className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                />
-              </div>
-
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={savingSubject}
                   onClick={() => setShowSubjectModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>
@@ -1891,9 +1886,16 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
       {/* Modal Tambah / Edit Kelas */}
       {showClassModal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingClass ? 'Edit Data Kelas' : 'Tambah Kelas Baru'}
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowClassModal(false);
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget || savingClass) return;
+            const isDirty = editingClass
+              ? classNameInput !== editingClass.name || classGradeInput !== editingClass.grade_level
+              : Boolean(classNameInput.trim());
+            if (!isDirty) setShowClassModal(false);
           }}
         >
           <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
@@ -1903,8 +1905,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               </h3>
               <button
                 type="button"
+                disabled={savingClass}
                 onClick={() => setShowClassModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                className="text-slate-400 hover:text-slate-700 disabled:opacity-50 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1950,8 +1953,9 @@ export const AdminManagementView: React.FC<AdminManagementViewProps> = ({
               <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
+                  disabled={savingClass}
                   onClick={() => setShowClassModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
                 >
                   Batal
                 </button>

@@ -10,7 +10,7 @@ interface OptionItem {
 
 interface TeacherTokenClaims {
   teacherId: number;
-  email: string;
+  nip: string;
   name: string;
   role: 'TEACHER' | 'ADMIN';
   exp: number;
@@ -57,6 +57,84 @@ interface PackageEventPayload {
   sessionId?: number;
   payload: Record<string, unknown>;
   timestamp: number;
+}
+
+type PackageAccessRole = 'ADMIN' | 'OWNER' | 'PROCTOR' | 'NONE';
+
+function getPackageAccess(
+  pkg: { teacher_id: number; proctor_id?: number | null },
+  teacher: { teacherId: number; role: 'ADMIN' | 'TEACHER' }
+): PackageAccessRole {
+  if (teacher.role === 'ADMIN') return 'ADMIN';
+  if (pkg.teacher_id === teacher.teacherId) return 'OWNER';
+  if (pkg.proctor_id !== null && pkg.proctor_id !== undefined && Number(pkg.proctor_id) === teacher.teacherId) {
+    return 'PROCTOR';
+  }
+  return 'NONE';
+}
+
+async function getEligibleSyncSiblings(
+  supabase: SupabaseClient,
+  pkgId: number,
+  scheduleGroup: string
+): Promise<Array<{ id: number; subject_id: number }>> {
+  if (!scheduleGroup) return [];
+  const { data: siblings } = await supabase
+    .from('exam_packages')
+    .select('id, subject_id')
+    .eq('schedule_group', scheduleGroup)
+    .neq('id', pkgId);
+
+  const list = (siblings || []) as Array<{ id: number; subject_id: number }>;
+  if (list.length === 0) return [];
+
+  const sibIds = list.map((s) => s.id);
+  const { data: sesRows } = await supabase
+    .from('exam_sessions')
+    .select('package_id')
+    .in('package_id', sibIds);
+  const busyPkgIds = new Set((sesRows || []).map((r: { package_id: number }) => r.package_id));
+
+  return list.filter((s) => !busyPkgIds.has(s.id));
+}
+
+async function checkSupabaseSessionManageAccess(
+  supabase: SupabaseClient,
+  sessionId: number,
+  teacher: { teacherId: number; role: 'ADMIN' | 'TEACHER' }
+): Promise<{
+  session?: SessionRow;
+  pkg?: { id: number; teacher_id: number; proctor_id: number | null; max_violations: number };
+  access?: PackageAccessRole;
+  errorStatus?: number;
+  errorMessage?: string;
+}> {
+  const { data: session } = await supabase
+    .from('exam_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .maybeSingle();
+
+  if (!session) {
+    return { errorStatus: 404, errorMessage: 'Sesi ujian siswa tidak ditemukan.' };
+  }
+
+  const { data: pkg } = await supabase
+    .from('exam_packages')
+    .select('id, teacher_id, proctor_id, max_violations')
+    .eq('id', session.package_id)
+    .maybeSingle();
+
+  if (!pkg) {
+    return { errorStatus: 404, errorMessage: 'Paket ujian tidak ditemukan.' };
+  }
+
+  const access = getPackageAccess(pkg, teacher);
+  if (access === 'NONE') {
+    return { errorStatus: 403, errorMessage: 'Anda tidak memiliki akses mengelola sesi peserta ini.' };
+  }
+
+  return { session: session as SessionRow, pkg, access };
 }
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
@@ -654,16 +732,21 @@ Deno.serve(async (req: Request) => {
     }
 
     // 1. TEACHER AUTH & CONTEXT
+    const normalizeTeacherNip = (raw?: string): string => (raw || '').trim().toLowerCase();
+    const isValidTeacherNip = (nip: string): boolean =>
+      nip.length >= 2 && nip.length <= 64 && /^[a-z0-9._-]+$/i.test(nip);
+
     if (method === 'POST' && path === '/auth/login') {
-      const { email, password } = await readJsonBody<{ email?: string; password?: string }>(req);
-      if (!email || !password) {
-        return jsonResponse(req, { error: 'Email dan kata sandi wajib diisi.' }, 400);
+      const { nip, email, password } = await readJsonBody<{ nip?: string; email?: string; password?: string }>(req);
+      const cleanNip = normalizeTeacherNip(nip ?? email);
+      if (!cleanNip || !password) {
+        return jsonResponse(req, { error: 'NIP / ID Login dan kata sandi wajib diisi.' }, 400);
       }
 
       const { data: teacher, error: teacherErr } = await supabase
         .from('teachers')
-        .select('id, name, email, password_hash, role')
-        .eq('email', email.trim().toLowerCase())
+        .select('id, name, nip, password_hash, role')
+        .eq('nip', cleanNip)
         .maybeSingle();
 
       if (teacherErr) {
@@ -675,14 +758,14 @@ Deno.serve(async (req: Request) => {
       }
 
       if (!teacher || !verifySecret(password, teacher.password_hash)) {
-        return jsonResponse(req, { error: 'Email atau kata sandi tidak sesuai.' }, 401);
+        return jsonResponse(req, { error: 'NIP / ID Login atau kata sandi tidak sesuai.' }, 401);
       }
 
       const masterKey = await getMasterSecret(supabase);
       const token = createTeacherToken(
         {
           teacherId: teacher.id,
-          email: teacher.email,
+          nip: teacher.nip,
           name: teacher.name,
           role: teacher.role as 'TEACHER' | 'ADMIN',
         },
@@ -694,7 +777,7 @@ Deno.serve(async (req: Request) => {
         teacher: {
           id: teacher.id,
           name: teacher.name,
-          email: teacher.email,
+          nip: teacher.nip,
           role: teacher.role,
         },
       });
@@ -744,10 +827,31 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(req, { success: true, message: 'Kata sandi berhasil diperbarui.' });
     }
 
+    const getTeacherAssignmentScope = async (teacherId: number) => {
+      const { data: assignRows } = await supabase
+        .from('teacher_assignments')
+        .select('subject_id, class_id')
+        .eq('teacher_id', teacherId);
+      const pairs = new Set<string>();
+      const subjectSet = new Set<number>();
+      const classSet = new Set<number>();
+      for (const r of (assignRows || []) as Array<{ subject_id: number; class_id: number }>) {
+        pairs.add(`${r.subject_id}:${r.class_id}`);
+        subjectSet.add(r.subject_id);
+        classSet.add(r.class_id);
+      }
+      return {
+        pairs,
+        subjectIds: Array.from(subjectSet),
+        classIds: Array.from(classSet),
+      };
+    };
+
     if (method === 'GET' && path === '/teacher/context') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
       const teacherId = auth.teacher!.teacherId;
+      const isAdmin = auth.teacher!.role === 'ADMIN';
 
       const { data: rawAssignments } = await supabase
         .from('teacher_assignments')
@@ -772,22 +876,45 @@ Deno.serve(async (req: Request) => {
           a.subject_name.localeCompare(b.subject_name) || a.class_name.localeCompare(b.class_name)
         );
 
-      const [{ data: subjects }, { data: classes }] = await Promise.all([
-        supabase.from('subjects').select('*').order('name', { ascending: true }),
-        supabase.from('classes').select('*').order('name', { ascending: true }),
+      const assignedSubjectIds = Array.from(new Set(assignments.map((a) => a.subject_id)));
+      const assignedClassIds = Array.from(new Set(assignments.map((a) => a.class_id)));
+
+      const [subjectsRes, classesRes, teachersRes] = await Promise.all([
+        isAdmin
+          ? supabase.from('subjects').select('*').order('name', { ascending: true })
+          : assignedSubjectIds.length > 0
+            ? supabase.from('subjects').select('*').in('id', assignedSubjectIds).order('name', { ascending: true })
+            : Promise.resolve({ data: [] }),
+        isAdmin
+          ? supabase.from('classes').select('*').order('grade_level', { ascending: true }).order('name', { ascending: true })
+          : assignedClassIds.length > 0
+            ? supabase
+                .from('classes')
+                .select('*')
+                .in('id', assignedClassIds)
+                .order('grade_level', { ascending: true })
+                .order('name', { ascending: true })
+            : Promise.resolve({ data: [] }),
+        isAdmin
+          ? supabase.from('teachers').select('id, name, nip, role').order('name', { ascending: true })
+          : Promise.resolve({ data: [] }),
       ]);
 
       return jsonResponse(req, {
         teacher: auth.teacher,
         assignments,
-        subjects: subjects || [],
-        classes: classes || [],
+        subjects: subjectsRes.data || [],
+        classes: classesRes.data || [],
+        teachers: teachersRes.data || [],
       });
     }
 
     if (method === 'POST' && path === '/teacher/assignments') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
+      if (auth.teacher!.role !== 'ADMIN') {
+        return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
+      }
       const teacherId = auth.teacher!.teacherId;
       const { subjectId, classId } = await readJsonBody<{ subjectId?: number; classId?: number }>(
         req
@@ -821,6 +948,30 @@ Deno.serve(async (req: Request) => {
     if (method === 'GET' && path === '/subjects') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
+      const isAdmin = auth.teacher!.role === 'ADMIN';
+
+      if (!isAdmin) {
+        const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+        if (scope.subjectIds.length === 0) {
+          return jsonResponse(req, { subjects: [] });
+        }
+        const [{ data: subjects }, { data: pkgRows }] = await Promise.all([
+          supabase.from('subjects').select('*').in('id', scope.subjectIds).order('name', { ascending: true }),
+          supabase.from('exam_packages').select('id, subject_id').eq('teacher_id', auth.teacher!.teacherId),
+        ]);
+        const ownedPkgIds = (pkgRows || []).map((p: { id: number }) => p.id);
+        const { data: qRows } =
+          ownedPkgIds.length > 0
+            ? await supabase.from('questions').select('subject_id').in('package_id', ownedPkgIds)
+            : { data: [] };
+
+        const list = (subjects || []).map((s: { id: number; code: string; name: string; description: string }) => ({
+          ...s,
+          package_count: (pkgRows || []).filter((p: { subject_id: number }) => p.subject_id === s.id).length,
+          question_count: (qRows || []).filter((q: { subject_id: number }) => q.subject_id === s.id).length,
+        }));
+        return jsonResponse(req, { subjects: list });
+      }
 
       const [{ data: subjects }, { data: pkgRows }, { data: qRows }] = await Promise.all([
         supabase.from('subjects').select('*').order('name', { ascending: true }),
@@ -951,6 +1102,43 @@ Deno.serve(async (req: Request) => {
     if (method === 'GET' && path === '/classes') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
+      const isAdmin = auth.teacher!.role === 'ADMIN';
+
+      if (!isAdmin) {
+        const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+        if (scope.classIds.length === 0) {
+          return jsonResponse(req, { classes: [] });
+        }
+        const [{ data: classes }, { data: stRows }, { data: pkgRows }] = await Promise.all([
+          supabase
+            .from('classes')
+            .select('id, name, grade_level')
+            .in('id', scope.classIds)
+            .order('grade_level', { ascending: true })
+            .order('name', { ascending: true }),
+          supabase.from('students').select('class_id').in('class_id', scope.classIds),
+          supabase
+            .from('exam_packages')
+            .select('class_id')
+            .or(`teacher_id.eq.${auth.teacher!.teacherId},proctor_id.eq.${auth.teacher!.teacherId}`),
+        ]);
+
+        const stCounts = new Map<number, number>();
+        for (const r of stRows || []) {
+          stCounts.set(r.class_id, (stCounts.get(r.class_id) || 0) + 1);
+        }
+        const pkgCounts = new Map<number, number>();
+        for (const r of pkgRows || []) {
+          pkgCounts.set(r.class_id, (pkgCounts.get(r.class_id) || 0) + 1);
+        }
+
+        const result = (classes || []).map((c: { id: number; name: string; grade_level: number }) => ({
+          ...c,
+          student_count: stCounts.get(c.id) || 0,
+          package_count: pkgCounts.get(c.id) || 0,
+        }));
+        return jsonResponse(req, { classes: result });
+      }
 
       const [{ data: classes }, { data: stRows }, { data: pkgRows }] = await Promise.all([
         supabase
@@ -1127,7 +1315,7 @@ Deno.serve(async (req: Request) => {
       const [{ data: teachers }, { data: pkgRows }, { data: rawAssignments }] = await Promise.all([
         supabase
           .from('teachers')
-          .select('id, name, email, role, created_at')
+          .select('id, name, nip, role, created_at')
           .order('role', { ascending: true })
           .order('name', { ascending: true }),
         supabase.from('exam_packages').select('teacher_id'),
@@ -1167,19 +1355,24 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(req, { error: 'Akses ditolak. Fitur ini khusus Admin Sekolah.' }, 403);
       }
 
-      const { name, email, password, role = 'TEACHER' } = await readJsonBody<{
+      const { name, nip, email, password, role = 'TEACHER' } = await readJsonBody<{
         name?: string;
+        nip?: string;
         email?: string;
         password?: string;
         role?: 'TEACHER' | 'ADMIN';
       }>(req);
 
       const cleanName = (name || '').trim();
-      const cleanEmail = (email || '').trim().toLowerCase();
+      const cleanNip = normalizeTeacherNip(nip ?? email);
       const cleanRole = role === 'ADMIN' ? 'ADMIN' : 'TEACHER';
 
-      if (!cleanName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-        return jsonResponse(req, { error: 'Nama lengkap dan format email guru yang valid wajib diisi.' }, 400);
+      if (!cleanName || !isValidTeacherNip(cleanNip)) {
+        return jsonResponse(
+          req,
+          { error: 'Nama lengkap dan NIP / ID Login (2–64 karakter huruf/angka/._- tanpa spasi) wajib diisi.' },
+          400
+        );
       }
       if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
         return jsonResponse(req, { error: 'Kata sandi awal harus terdiri dari 6–128 karakter.' }, 400);
@@ -1187,12 +1380,12 @@ Deno.serve(async (req: Request) => {
 
       const { data: created, error } = await supabase
         .from('teachers')
-        .insert({ name: cleanName, email: cleanEmail, password_hash: hashSecret(password), role: cleanRole })
-        .select('id, name, email, role, created_at')
+        .insert({ name: cleanName, nip: cleanNip, password_hash: hashSecret(password), role: cleanRole })
+        .select('id, name, nip, role, created_at')
         .single();
 
       if (error || !created) {
-        return jsonResponse(req, { error: `Email "${cleanEmail}" sudah terdaftar.` }, 409);
+        return jsonResponse(req, { error: `NIP / ID Login "${cleanNip}" sudah terdaftar.` }, 409);
       }
       return jsonResponse(req, { teacher: created }, 201);
     }
@@ -1259,12 +1452,12 @@ Deno.serve(async (req: Request) => {
 
       const importedCredentials: Array<{
         name: string;
-        email: string;
+        nip: string;
         role: 'TEACHER' | 'ADMIN';
         password: string;
         action: 'CREATED' | 'UPDATED';
       }> = [];
-      const skipped: Array<{ lineNumber: number; email: string; name: string; reason: string }> = [];
+      const skipped: Array<{ lineNumber: number; nip: string; name: string; reason: string }> = [];
       const errors: Array<{ lineNumber: number; raw: string; reason: string }> = [];
       let totalRows = 0;
 
@@ -1276,24 +1469,28 @@ Deno.serve(async (req: Request) => {
         if (idx === 0) {
           const c0 = (cols[0] || '').toLowerCase();
           const c1 = (cols[1] || '').toLowerCase();
-          if (c0.includes('nama') || c0 === 'name' || c1.includes('email')) {
+          if (c0.includes('nama') || c0 === 'name' || c1.includes('nip') || c1.includes('email') || c1 === 'id') {
             continue;
           }
         }
 
         totalRows++;
         if (cols.length < 2) {
-          errors.push({ lineNumber, raw: line, reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, Email).' });
+          errors.push({ lineNumber, raw: line, reason: 'Minimal harus memiliki 2 kolom (Nama Lengkap, NIP / ID Login).' });
           continue;
         }
 
         const name = cols[0].trim();
-        const email = cols[1].trim().toLowerCase();
+        const nip = normalizeTeacherNip(cols[1]);
         const rawRole = (cols[2] || 'TEACHER').trim().toUpperCase();
         const rawPass = (cols[3] || '').trim();
 
-        if (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          errors.push({ lineNumber, raw: line, reason: 'Nama lengkap atau format email tidak valid.' });
+        if (!name || !isValidTeacherNip(nip)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: 'Nama lengkap atau format NIP / ID Login (2–64 karakter tanpa spasi) tidak valid.',
+          });
           continue;
         }
         if (rawRole && !['TEACHER', 'GURU', 'ADMIN'].includes(rawRole)) {
@@ -1314,11 +1511,11 @@ Deno.serve(async (req: Request) => {
         const { data: existing } = await supabase
           .from('teachers')
           .select('id, role')
-          .eq('email', email)
+          .eq('nip', nip)
           .maybeSingle();
 
         if (existing && !updateExisting) {
-          skipped.push({ lineNumber, email, name, reason: 'Email sudah terdaftar (lewati duplikat).' });
+          skipped.push({ lineNumber, nip, name, reason: 'NIP / ID Login sudah terdaftar (lewati duplikat).' });
           continue;
         }
 
@@ -1339,17 +1536,17 @@ Deno.serve(async (req: Request) => {
               .from('teachers')
               .update({ name, role, password_hash: hashSecret(rawPass) })
               .eq('id', existing.id);
-            importedCredentials.push({ name, email, role, password: rawPass, action: 'UPDATED' });
+            importedCredentials.push({ name, nip, role, password: rawPass, action: 'UPDATED' });
           } else {
             await supabase.from('teachers').update({ name, role }).eq('id', existing.id);
-            importedCredentials.push({ name, email, role, password: 'Tetap (Tersimpan)', action: 'UPDATED' });
+            importedCredentials.push({ name, nip, role, password: 'Tetap (Tersimpan)', action: 'UPDATED' });
           }
         } else {
           const plainPass = rawPass || generateTeacherPass(8);
           await supabase
             .from('teachers')
-            .insert({ name, email, password_hash: hashSecret(plainPass), role });
-          importedCredentials.push({ name, email, role, password: plainPass, action: 'CREATED' });
+            .insert({ name, nip, password_hash: hashSecret(plainPass), role });
+          importedCredentials.push({ name, nip, role, password: plainPass, action: 'CREATED' });
         }
       }
 
@@ -1379,7 +1576,7 @@ Deno.serve(async (req: Request) => {
       if (method === 'PUT') {
         const { data: existing } = await supabase
           .from('teachers')
-          .select('id, name, email, role, password_hash')
+          .select('id, name, nip, role, password_hash')
           .eq('id', targetId)
           .maybeSingle();
 
@@ -1387,19 +1584,25 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(req, { error: 'Akun guru tidak ditemukan.' }, 404);
         }
 
-        const { name, email, role, newPassword } = await readJsonBody<{
+        const { name, nip, email, role, newPassword } = await readJsonBody<{
           name?: string;
+          nip?: string;
           email?: string;
           role?: 'TEACHER' | 'ADMIN';
           newPassword?: string;
         }>(req);
 
+        const rawNip = nip !== undefined ? nip : email;
         const nextName = name !== undefined ? name.trim() : existing.name;
-        const nextEmail = email !== undefined ? email.trim().toLowerCase() : existing.email;
+        const nextNip = rawNip !== undefined ? normalizeTeacherNip(rawNip) : existing.nip;
         const nextRole = role === 'ADMIN' || role === 'TEACHER' ? role : existing.role;
 
-        if (!nextName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
-          return jsonResponse(req, { error: 'Nama lengkap dan email yang valid wajib diisi.' }, 400);
+        if (!nextName || !isValidTeacherNip(nextNip)) {
+          return jsonResponse(
+            req,
+            { error: 'Nama lengkap dan NIP / ID Login (2–64 karakter huruf/angka/._- tanpa spasi) wajib diisi.' },
+            400
+          );
         }
 
         if (existing.role === 'ADMIN' && nextRole !== 'ADMIN') {
@@ -1422,13 +1625,13 @@ Deno.serve(async (req: Request) => {
 
         const { data: updated, error } = await supabase
           .from('teachers')
-          .update({ name: nextName, email: nextEmail, role: nextRole, password_hash: nextHash })
+          .update({ name: nextName, nip: nextNip, role: nextRole, password_hash: nextHash })
           .eq('id', targetId)
-          .select('id, name, email, role, created_at')
+          .select('id, name, nip, role, created_at')
           .single();
 
         if (error || !updated) {
-          return jsonResponse(req, { error: `Email "${nextEmail}" sudah digunakan akun lain.` }, 409);
+          return jsonResponse(req, { error: `NIP / ID Login "${nextNip}" sudah digunakan akun lain.` }, 409);
         }
         return jsonResponse(req, { teacher: updated });
       }
@@ -1474,7 +1677,7 @@ Deno.serve(async (req: Request) => {
 
       const { data: teacher } = await supabase
         .from('teachers')
-        .select('id, name, email')
+        .select('id, name, nip')
         .eq('id', targetId)
         .maybeSingle();
 
@@ -1501,7 +1704,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(req, {
         teacherId: teacher.id,
         name: teacher.name,
-        email: teacher.email,
+        nip: teacher.nip,
         newPassword,
       });
     }
@@ -1568,7 +1771,7 @@ Deno.serve(async (req: Request) => {
         .order('id', { ascending: false });
 
       if (teacher.role !== 'ADMIN') {
-        query = query.eq('teacher_id', teacher.teacherId);
+        query = query.or(`teacher_id.eq.${teacher.teacherId},proctor_id.eq.${teacher.teacherId}`);
       }
 
       const { data: pkgRows } = await query;
@@ -1579,18 +1782,34 @@ Deno.serve(async (req: Request) => {
 
       const pkgIds = pkgs.map((p: { id: number }) => p.id);
       const classIds = [...new Set(pkgs.map((p: { class_id: number }) => p.class_id))];
+      const teacherIds = [
+        ...new Set(
+          pkgs
+            .flatMap((p: { teacher_id: number; proctor_id?: number | null }) => [p.teacher_id, p.proctor_id])
+            .filter((id): id is number => typeof id === 'number' && id > 0)
+        ),
+      ];
 
-      const [{ data: qRows }, { data: stRows }, { data: sesRows }] = await Promise.all([
+      const [{ data: qRows }, { data: stRows }, { data: sesRows }, { data: tRows }] = await Promise.all([
         supabase.from('questions').select('package_id').in('package_id', pkgIds),
         supabase.from('students').select('class_id').in('class_id', classIds),
         supabase.from('exam_sessions').select('package_id, status').in('package_id', pkgIds),
+        teacherIds.length > 0
+          ? supabase.from('teachers').select('id, name').in('id', teacherIds)
+          : Promise.resolve({ data: [] }),
       ]);
+
+      const teacherNameMap = new Map(
+        ((tRows || []) as Array<{ id: number; name: string }>).map((t) => [t.id, t.name])
+      );
 
       const packages = pkgs.map((ep: Record<string, unknown>) => {
         const subj = ep.subjects as { name: string; code: string } | null;
         const cls = ep.classes as { name: string } | null;
         const pkgId = ep.id as number;
         const classId = ep.class_id as number;
+        const ownerId = ep.teacher_id as number;
+        const proctorId = (ep.proctor_id as number | null | undefined) ?? null;
 
         const qCount = (qRows || []).filter((q: { package_id: number }) => q.package_id === pkgId).length;
         const stCount = (stRows || []).filter((s: { class_id: number }) => s.class_id === classId).length;
@@ -1602,6 +1821,10 @@ Deno.serve(async (req: Request) => {
           subject_name: subj?.name || '',
           subject_code: subj?.code || '',
           class_name: cls?.name || '',
+          teacher_name: teacherNameMap.get(ownerId) || '',
+          proctor_id: proctorId,
+          proctor_name: proctorId ? teacherNameMap.get(proctorId) || null : null,
+          access_role: getPackageAccess({ teacher_id: ownerId, proctor_id: proctorId }, teacher),
           question_count: qCount,
           class_student_count: stCount,
           active_count: pkgSessions.filter((s: { status: string }) => s.status === 'IN_PROGRESS').length,
@@ -1617,12 +1840,18 @@ Deno.serve(async (req: Request) => {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
       const teacherId = auth.teacher!.teacherId;
+      const isAdmin = auth.teacher!.role === 'ADMIN';
 
       const {
         title,
         subjectId,
         classId,
+        classIds,
         className,
+        examDate = '',
+        kkm = 75,
+        proctorId,
+        proctorsByClass,
         durationMinutes = 60,
         maxViolations = 3,
         shuffleQuestions = true,
@@ -1634,7 +1863,12 @@ Deno.serve(async (req: Request) => {
         title?: string;
         subjectId?: number;
         classId?: number;
+        classIds?: number[];
         className?: string;
+        examDate?: string;
+        kkm?: number;
+        proctorId?: number | null;
+        proctorsByClass?: Record<string, number | null>;
         durationMinutes?: number;
         maxViolations?: number;
         shuffleQuestions?: boolean;
@@ -1644,12 +1878,30 @@ Deno.serve(async (req: Request) => {
         cloneFromPackageId?: number;
       }>(req);
 
-      if (!title?.trim() || !subjectId || (!classId && !className?.trim())) {
-        return jsonResponse(req, { error: 'Judul paket, mata pelajaran, dan kelas wajib diisi.' }, 400);
+      const hasClassIds = Array.isArray(classIds) && classIds.filter((id) => Number(id) > 0).length > 0;
+      if (!title?.trim() || !subjectId || (!hasClassIds && !classId && !className?.trim())) {
+        return jsonResponse(req, { error: 'Judul paket, mata pelajaran, dan minimal satu kelas wajib diisi.' }, 400);
       }
 
-      let resolvedClassId = classId ? Number(classId) : 0;
-      if (!resolvedClassId && className?.trim()) {
+      const hasNonAdminProctorAttempt =
+        !isAdmin &&
+        ((proctorId !== undefined && proctorId !== null) ||
+          (proctorsByClass && Object.values(proctorsByClass).some((v) => v !== null && v !== undefined)));
+      if (hasNonAdminProctorAttempt) {
+        return jsonResponse(req, { error: 'Hanya Admin Sekolah yang dapat menentukan Guru Pengawas.' }, 403);
+      }
+
+      const targetClassIds: number[] = [];
+      if (hasClassIds) {
+        for (const cid of classIds!) {
+          const num = Number(cid);
+          if (Number.isFinite(num) && num > 0 && !targetClassIds.includes(num)) {
+            targetClassIds.push(num);
+          }
+        }
+      } else if (classId) {
+        targetClassIds.push(Number(classId));
+      } else if (className?.trim()) {
         const cleanClassName = className.replace(/^kelas\s+/i, '').trim().toUpperCase();
         const { data: foundClass } = await supabase
           .from('classes')
@@ -1658,7 +1910,13 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
 
         if (foundClass) {
-          resolvedClassId = foundClass.id;
+          targetClassIds.push(foundClass.id);
+        } else if (!isAdmin) {
+          return jsonResponse(
+            req,
+            { error: `Akses ditolak. Kelas "${cleanClassName}" tidak ditemukan atau bukan bagian dari penugasan mengajar Anda.` },
+            403
+          );
         } else {
           const matchGrade = cleanClassName.match(/^(\d+)/);
           const gradeLevel = matchGrade ? Number(matchGrade[1]) : 8;
@@ -1667,7 +1925,23 @@ Deno.serve(async (req: Request) => {
             .insert({ name: cleanClassName, grade_level: gradeLevel })
             .select('id')
             .single();
-          resolvedClassId = createdCls!.id;
+          targetClassIds.push(createdCls!.id);
+        }
+      }
+
+      if (targetClassIds.length === 0) {
+        return jsonResponse(req, { error: 'Kelas target tidak valid.' }, 400);
+      }
+
+      if (!isAdmin) {
+        const scope = await getTeacherAssignmentScope(teacherId);
+        const unauthorizedClass = targetClassIds.find((cid) => !scope.pairs.has(`${Number(subjectId)}:${cid}`));
+        if (unauthorizedClass !== undefined) {
+          return jsonResponse(
+            req,
+            { error: 'Akses ditolak. Anda hanya dapat membuat paket ujian sesuai penugasan mata pelajaran dan kelas Anda.' },
+            403
+          );
         }
       }
 
@@ -1680,81 +1954,125 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const token = cleanedInitialToken || generateExamToken();
-      const { data: insertedPkg, error: insertErr } = await supabase
-        .from('exam_packages')
-        .insert({
-          teacher_id: teacherId,
-          subject_id: Number(subjectId),
-          class_id: resolvedClassId,
-          title: title.trim(),
-          duration_minutes: Math.max(5, Math.min(300, Number(durationMinutes) || 60)),
-          is_active: isActive ? 1 : 0,
-          max_violations: Math.max(1, Math.min(20, Number(maxViolations) || 3)),
-          shuffle_questions: shuffleQuestions ? 1 : 0,
-          shuffle_options: shuffleOptions ? 1 : 0,
-          current_token: token,
-        })
-        .select('id')
-        .single();
-
-      if (insertErr || !insertedPkg) {
-        return jsonResponse(req, { error: 'Gagal membuat paket ujian baru.' }, 500);
-      }
-
-      const newPackageId = insertedPkg.id;
+      let sourceQuestions: Array<{
+        question_text: string;
+        question_type: string;
+        options_json: string;
+        correct_option: string;
+        points: number;
+      }> = [];
 
       if (cloneFromPackageId) {
-        const { data: sourceQuestions } = await supabase
+        const { data: sourcePkg } = await supabase
+          .from('exam_packages')
+          .select('id, teacher_id, proctor_id')
+          .eq('id', Number(cloneFromPackageId))
+          .maybeSingle();
+        if (!sourcePkg) {
+          return jsonResponse(req, { error: 'Paket sumber salinan soal tidak ditemukan.' }, 404);
+        }
+        const sourceAccess = getPackageAccess(sourcePkg, auth.teacher!);
+        if (sourceAccess !== 'ADMIN' && sourceAccess !== 'OWNER') {
+          return jsonResponse(req, { error: 'Anda tidak memiliki akses menyalin soal dari paket tersebut.' }, 403);
+        }
+        const { data: srcQs } = await supabase
           .from('questions')
           .select('question_text, question_type, options_json, correct_option, points')
           .eq('package_id', Number(cloneFromPackageId));
-
-        if (sourceQuestions && sourceQuestions.length > 0) {
-          await supabase.from('questions').insert(
-            sourceQuestions.map(
-              (q: {
-                question_text: string;
-                question_type: string;
-                options_json: string;
-                correct_option: string;
-                points: number;
-              }) => ({
-                subject_id: Number(subjectId),
-                package_id: newPackageId,
-                question_text: q.question_text,
-                question_type: q.question_type,
-                options_json: q.options_json,
-                correct_option: q.correct_option,
-                points: q.points,
-              })
-            )
-          );
-        }
+        sourceQuestions = (srcQs || []) as typeof sourceQuestions;
       }
 
-      const { data: created } = await supabase
-        .from('exam_packages')
-        .select('*, subjects(name, code), classes(name)')
-        .eq('id', newPackageId)
-        .single();
+      const scheduleGroup = targetClassIds.length > 1 ? `grp-${crypto.randomBytes(6).toString('hex')}` : '';
+      const cleanExamDate = (examDate || '').trim();
+      const cleanKkm = Math.max(0, Math.min(100, Math.round(Number(kkm) || 75)));
+      const cleanDuration = Math.max(5, Math.min(300, Number(durationMinutes) || 60));
+      const cleanMaxViolations = Math.max(1, Math.min(20, Number(maxViolations) || 3));
+      const baseTitle = title.trim();
 
-      const subj = created?.subjects as { name: string; code: string } | null;
-      const cls = created?.classes as { name: string } | null;
-      const { subjects: _s, classes: _c, ...rest } = (created || {}) as Record<string, unknown>;
-
-      return jsonResponse(
-        req,
-        {
-          package: {
-            ...rest,
-            subject_name: subj?.name || '',
-            subject_code: subj?.code || '',
-            class_name: cls?.name || '',
-          },
-        },
-        201
+      const { data: classRows } = await supabase
+        .from('classes')
+        .select('id, name')
+        .in('id', targetClassIds);
+      const classNameMap = new Map(
+        ((classRows || []) as Array<{ id: number; name: string }>).map((c) => [c.id, c.name])
       );
+
+      const rowsToInsert = targetClassIds.map((cid, idx) => {
+        const clsName = classNameMap.get(cid) || String(cid);
+        const resolvedTitle =
+          targetClassIds.length > 1
+            ? baseTitle.toLowerCase().includes(clsName.toLowerCase())
+              ? baseTitle
+              : `${baseTitle} — Kelas ${clsName}`
+            : baseTitle;
+
+        const rawProctor = isAdmin
+          ? proctorsByClass && Object.prototype.hasOwnProperty.call(proctorsByClass, String(cid))
+            ? proctorsByClass[String(cid)]
+            : proctorId ?? null
+          : null;
+        const resolvedProctorId = rawProctor ? Number(rawProctor) : null;
+        const token = idx === 0 && cleanedInitialToken ? cleanedInitialToken : generateExamToken();
+
+        return {
+          teacher_id: teacherId,
+          proctor_id: resolvedProctorId,
+          subject_id: Number(subjectId),
+          class_id: cid,
+          title: resolvedTitle,
+          exam_date: cleanExamDate,
+          kkm: cleanKkm,
+          schedule_group: scheduleGroup,
+          duration_minutes: cleanDuration,
+          is_active: isActive ? 1 : 0,
+          max_violations: cleanMaxViolations,
+          shuffle_questions: shuffleQuestions ? 1 : 0,
+          shuffle_options: shuffleOptions ? 1 : 0,
+          current_token: token,
+        };
+      });
+
+      const { data: insertedPkgs, error: insertErr } = await supabase
+        .from('exam_packages')
+        .insert(rowsToInsert)
+        .select('*, subjects(name, code), classes(name)');
+
+      if (insertErr || !insertedPkgs || insertedPkgs.length === 0) {
+        return jsonResponse(req, { error: 'Gagal membuat paket ujian baru.' }, 500);
+      }
+
+      if (sourceQuestions.length > 0) {
+        const cloneRows = insertedPkgs.flatMap((pkgRow: { id: number }) =>
+          sourceQuestions.map((q) => ({
+            subject_id: Number(subjectId),
+            package_id: pkgRow.id,
+            question_text: q.question_text,
+            question_type: q.question_type,
+            options_json: q.options_json,
+            correct_option: q.correct_option,
+            points: q.points,
+          }))
+        );
+        await supabase.from('questions').insert(cloneRows);
+      }
+
+      const enriched = insertedPkgs.map((ep: Record<string, unknown>) => {
+        const subj = ep.subjects as { name: string; code: string } | null;
+        const cls = ep.classes as { name: string } | null;
+        const { subjects: _s, classes: _c, ...rest } = ep;
+        return {
+          ...rest,
+          subject_name: subj?.name || '',
+          subject_code: subj?.code || '',
+          class_name: cls?.name || '',
+          access_role: getPackageAccess(
+            { teacher_id: ep.teacher_id as number, proctor_id: (ep.proctor_id as number | null) ?? null },
+            auth.teacher!
+          ),
+        };
+      });
+
+      return jsonResponse(req, { package: enriched[0], packages: enriched }, 201);
     }
 
     const pkgMatch = path.match(/^\/packages\/(\d+)$/);
@@ -1768,6 +2086,9 @@ Deno.serve(async (req: Request) => {
           title,
           subjectId,
           classId,
+          proctorId,
+          examDate,
+          kkm,
           durationMinutes,
           maxViolations,
           shuffleQuestions,
@@ -1777,6 +2098,9 @@ Deno.serve(async (req: Request) => {
           title?: string;
           subjectId?: number;
           classId?: number;
+          proctorId?: number | null;
+          examDate?: string;
+          kkm?: number;
           durationMinutes?: number;
           maxViolations?: number;
           shuffleQuestions?: boolean;
@@ -1794,18 +2118,57 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
         }
 
-        if (auth.teacher!.role !== 'ADMIN' && existing.teacher_id !== auth.teacher!.teacherId) {
+        const access = getPackageAccess(existing, auth.teacher!);
+        if (access !== 'ADMIN' && access !== 'OWNER') {
           return jsonResponse(req, { error: 'Anda tidak memiliki akses untuk mengubah paket ujian ini.' }, 403);
         }
 
+        if (proctorId !== undefined && auth.teacher!.role !== 'ADMIN') {
+          return jsonResponse(req, { error: 'Hanya Admin Sekolah yang dapat menentukan Guru Pengawas.' }, 403);
+        }
+
+        let nextProctorId = existing.proctor_id ?? null;
+        if (proctorId !== undefined && auth.teacher!.role === 'ADMIN') {
+          if (proctorId === null || Number(proctorId) === 0) {
+            nextProctorId = null;
+          } else {
+            const { data: foundProctor } = await supabase
+              .from('teachers')
+              .select('id')
+              .eq('id', Number(proctorId))
+              .maybeSingle();
+            if (!foundProctor) {
+              return jsonResponse(req, { error: 'Akun Guru Pengawas tidak ditemukan.' }, 400);
+            }
+            nextProctorId = foundProctor.id;
+          }
+        }
+
         const nextSubjectId = subjectId ? Number(subjectId) : existing.subject_id;
+        const nextClassId = classId ? Number(classId) : existing.class_id;
+        if (auth.teacher!.role !== 'ADMIN') {
+          const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+          if (!scope.pairs.has(`${nextSubjectId}:${nextClassId}`)) {
+            return jsonResponse(
+              req,
+              { error: 'Akses ditolak. Mata pelajaran dan kelas paket ujian harus sesuai penugasan Anda.' },
+              403
+            );
+          }
+        }
+        const nextExamDate = examDate !== undefined ? examDate.trim() : existing.exam_date || '';
+        const nextKkm =
+          kkm !== undefined ? Math.max(0, Math.min(100, Math.round(Number(kkm)))) : existing.kkm ?? 75;
 
         await supabase
           .from('exam_packages')
           .update({
             title: title?.trim() || existing.title,
             subject_id: nextSubjectId,
-            class_id: classId ? Number(classId) : existing.class_id,
+            class_id: nextClassId,
+            proctor_id: nextProctorId,
+            exam_date: nextExamDate,
+            kkm: nextKkm,
             duration_minutes: durationMinutes
               ? Math.max(5, Math.min(300, Number(durationMinutes)))
               : existing.duration_minutes,
@@ -1839,7 +2202,7 @@ Deno.serve(async (req: Request) => {
       if (method === 'DELETE') {
         const { data: existing } = await supabase
           .from('exam_packages')
-          .select('id, teacher_id')
+          .select('id, teacher_id, proctor_id')
           .eq('id', pkgId)
           .maybeSingle();
 
@@ -1847,7 +2210,8 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
         }
 
-        if (auth.teacher!.role !== 'ADMIN' && existing.teacher_id !== auth.teacher!.teacherId) {
+        const access = getPackageAccess(existing, auth.teacher!);
+        if (access !== 'ADMIN' && access !== 'OWNER') {
           return jsonResponse(req, { error: 'Anda tidak memiliki akses untuk menghapus paket ujian ini.' }, 403);
         }
 
@@ -1864,12 +2228,21 @@ Deno.serve(async (req: Request) => {
 
       const { data: pkg } = await supabase
         .from('exam_packages')
-        .select('id, is_active')
+        .select('id, teacher_id, proctor_id, is_active')
         .eq('id', pkgId)
         .maybeSingle();
 
       if (!pkg) {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
+      }
+
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        return jsonResponse(
+          req,
+          { error: 'Hanya Admin atau Guru Mapel pembuat paket yang dapat mengaktifkan/menonaktifkan ujian.' },
+          403
+        );
       }
 
       const nextActive = pkg.is_active ? 0 : 1;
@@ -1893,12 +2266,21 @@ Deno.serve(async (req: Request) => {
 
       const { data: pkg } = await supabase
         .from('exam_packages')
-        .select('id, current_token')
+        .select('id, teacher_id, proctor_id, current_token')
         .eq('id', pkgId)
         .maybeSingle();
 
       if (!pkg) {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
+      }
+
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        return jsonResponse(
+          req,
+          { error: 'Hanya Admin atau Guru Mapel pembuat paket yang dapat merotasi token.' },
+          403
+        );
       }
 
       let nextToken = generateExamToken();
@@ -1942,6 +2324,20 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
       }
 
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access === 'NONE') {
+        return jsonResponse(req, { error: 'Anda tidak memiliki akses melihat QR paket ujian ini.' }, 403);
+      }
+
+      const teacherIds = [pkg.teacher_id, pkg.proctor_id].filter(
+        (id): id is number => typeof id === 'number' && id > 0
+      );
+      const { data: tRows } =
+        teacherIds.length > 0
+          ? await supabase.from('teachers').select('id, name').in('id', teacherIds)
+          : { data: [] };
+      const tMap = new Map(((tRows || []) as Array<{ id: number; name: string }>).map((t) => [t.id, t.name]));
+
       const subj = pkg.subjects as { name: string; code: string } | null;
       const cls = pkg.classes as { name: string } | null;
       const masterKey = await getMasterSecret(supabase);
@@ -1972,6 +2368,9 @@ Deno.serve(async (req: Request) => {
         title: pkg.title,
         className: cls?.name || '',
         subjectName: subj?.name || '',
+        teacherName: tMap.get(pkg.teacher_id) || '',
+        proctorName: pkg.proctor_id ? tMap.get(pkg.proctor_id) || null : null,
+        examDate: pkg.exam_date || '',
         isActive: pkg.is_active === 1,
         currentToken: pkg.current_token,
         studentExamUrl,
@@ -1981,12 +2380,31 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 3. QUESTION BANK CRUD
+    // 3. QUESTION BANK CRUD (OWNER / ADMIN ONLY — PROCTOR DENIED)
     const pkgQuestionsMatch = path.match(/^\/packages\/(\d+)\/questions$/);
     if (pkgQuestionsMatch) {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
       const pkgId = Number(pkgQuestionsMatch[1]);
+
+      const { data: pkg } = await supabase
+        .from('exam_packages')
+        .select('id, subject_id, teacher_id, proctor_id, schedule_group')
+        .eq('id', pkgId)
+        .maybeSingle();
+
+      if (!pkg) {
+        return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
+      }
+
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        return jsonResponse(
+          req,
+          { error: 'Akses ditolak. Guru Pengawas tidak diperkenankan membuka atau mengubah Bank Soal.' },
+          403
+        );
+      }
 
       if (method === 'GET') {
         const { data: questions } = await supabase
@@ -2004,21 +2422,12 @@ Deno.serve(async (req: Request) => {
       }
 
       if (method === 'POST') {
-        const { data: pkg } = await supabase
-          .from('exam_packages')
-          .select('id, subject_id')
-          .eq('id', pkgId)
-          .maybeSingle();
-
-        if (!pkg) {
-          return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
-        }
-
-        const { questionText, options, correctOption, points = 20 } = await readJsonBody<{
+        const { questionText, options, correctOption, points = 20, syncSiblings = true } = await readJsonBody<{
           questionText?: string;
           options?: OptionItem[];
           correctOption?: string;
           points?: number;
+          syncSiblings?: boolean;
         }>(req);
 
         if (!questionText?.trim() || !Array.isArray(options) || options.length < 2 || !correctOption) {
@@ -2029,16 +2438,21 @@ Deno.serve(async (req: Request) => {
           );
         }
 
+        const cleanText = questionText.trim();
+        const optionsJson = JSON.stringify(options);
+        const cleanCorrect = correctOption.trim().toUpperCase();
+        const cleanPoints = Math.max(1, Number(points) || 10);
+
         const { data: insertedQ, error } = await supabase
           .from('questions')
           .insert({
             subject_id: pkg.subject_id,
             package_id: pkgId,
-            question_text: questionText.trim(),
+            question_text: cleanText,
             question_type: 'MULTIPLE_CHOICE',
-            options_json: JSON.stringify(options),
-            correct_option: correctOption.trim().toUpperCase(),
-            points: Math.max(1, Number(points) || 10),
+            options_json: optionsJson,
+            correct_option: cleanCorrect,
+            points: cleanPoints,
           })
           .select('id')
           .single();
@@ -2047,7 +2461,26 @@ Deno.serve(async (req: Request) => {
           return jsonResponse(req, { error: 'Gagal menyimpan soal.' }, 500);
         }
 
-        return jsonResponse(req, { id: insertedQ.id }, 201);
+        let syncedPackageCount = 0;
+        if (syncSiblings && pkg.schedule_group) {
+          const siblings = await getEligibleSyncSiblings(supabase, pkgId, pkg.schedule_group);
+          if (siblings.length > 0) {
+            await supabase.from('questions').insert(
+              siblings.map((sib) => ({
+                subject_id: sib.subject_id,
+                package_id: sib.id,
+                question_text: cleanText,
+                question_type: 'MULTIPLE_CHOICE',
+                options_json: optionsJson,
+                correct_option: cleanCorrect,
+                points: cleanPoints,
+              }))
+            );
+            syncedPackageCount = siblings.length;
+          }
+        }
+
+        return jsonResponse(req, { id: insertedQ.id, syncedPackageCount }, 201);
       }
     }
 
@@ -2059,7 +2492,7 @@ Deno.serve(async (req: Request) => {
 
       const { data: pkg } = await supabase
         .from('exam_packages')
-        .select('id, subject_id')
+        .select('id, subject_id, teacher_id, proctor_id, schedule_group')
         .eq('id', pkgId)
         .maybeSingle();
 
@@ -2067,9 +2500,19 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
       }
 
-      const { rawText, replaceExisting = false } = await readJsonBody<{
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        return jsonResponse(
+          req,
+          { error: 'Akses ditolak. Guru Pengawas tidak diperkenankan mengimpor soal.' },
+          403
+        );
+      }
+
+      const { rawText, replaceExisting = false, syncSiblings = true } = await readJsonBody<{
         rawText?: string;
         replaceExisting?: boolean;
+        syncSiblings?: boolean;
       }>(req);
 
       if (!rawText || !rawText.trim()) {
@@ -2172,12 +2615,25 @@ Deno.serve(async (req: Request) => {
         });
       }
 
+      const eligibleSiblings =
+        syncSiblings && pkg.schedule_group
+          ? await getEligibleSyncSiblings(supabase, pkgId, pkg.schedule_group)
+          : [];
+
       if (replaceExisting) {
-        await supabase.from('questions').delete().eq('package_id', pkgId);
+        const delIds = [pkgId, ...eligibleSiblings.map((s) => s.id)];
+        await supabase.from('questions').delete().in('package_id', delIds);
       }
 
       if (toInsert.length > 0) {
-        await supabase.from('questions').insert(toInsert);
+        const sibInserts = eligibleSiblings.flatMap((sib) =>
+          toInsert.map((item) => ({
+            ...item,
+            subject_id: sib.subject_id,
+            package_id: sib.id,
+          }))
+        );
+        await supabase.from('questions').insert([...toInsert, ...sibInserts]);
       }
 
       return jsonResponse(req, {
@@ -2185,6 +2641,7 @@ Deno.serve(async (req: Request) => {
           totalRows,
           createdCount: toInsert.length,
           errorCount: errors.length,
+          syncedPackageCount: eligibleSiblings.length,
         },
         errors,
       });
@@ -2196,51 +2653,96 @@ Deno.serve(async (req: Request) => {
       if (auth.errorResponse) return auth.errorResponse;
       const qId = Number(qMatch[1]);
 
+      const { data: existing } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('id', qId)
+        .maybeSingle();
+
+      if (!existing) {
+        return jsonResponse(req, { error: 'Soal tidak ditemukan.' }, 404);
+      }
+
+      const { data: pkg } = await supabase
+        .from('exam_packages')
+        .select('id, teacher_id, proctor_id, schedule_group')
+        .eq('id', existing.package_id)
+        .maybeSingle();
+
+      if (pkg) {
+        const access = getPackageAccess(pkg, auth.teacher!);
+        if (access !== 'ADMIN' && access !== 'OWNER') {
+          return jsonResponse(
+            req,
+            { error: 'Akses ditolak. Guru Pengawas tidak diperkenankan mengubah atau menghapus soal.' },
+            403
+          );
+        }
+      }
+
       if (method === 'PUT') {
-        const { questionText, options, correctOption, points } = await readJsonBody<{
+        const { questionText, options, correctOption, points, syncSiblings = true } = await readJsonBody<{
           questionText?: string;
           options?: OptionItem[];
           correctOption?: string;
           points?: number;
+          syncSiblings?: boolean;
         }>(req);
 
-        const { data: existing } = await supabase
-          .from('questions')
-          .select('*')
-          .eq('id', qId)
-          .maybeSingle();
-
-        if (!existing) {
-          return jsonResponse(req, { error: 'Soal tidak ditemukan.' }, 404);
-        }
+        const nextText = questionText?.trim() || existing.question_text;
+        const nextOpts = Array.isArray(options) ? JSON.stringify(options) : existing.options_json;
+        const nextCorrect = correctOption ? correctOption.trim().toUpperCase() : existing.correct_option;
+        const nextPoints = points ? Math.max(1, Number(points)) : existing.points;
 
         await supabase
           .from('questions')
           .update({
-            question_text: questionText?.trim() || existing.question_text,
-            options_json: Array.isArray(options)
-              ? JSON.stringify(options)
-              : existing.options_json,
-            correct_option: correctOption
-              ? correctOption.trim().toUpperCase()
-              : existing.correct_option,
-            points: points ? Math.max(1, Number(points)) : existing.points,
+            question_text: nextText,
+            options_json: nextOpts,
+            correct_option: nextCorrect,
+            points: nextPoints,
           })
           .eq('id', qId);
+
+        if (syncSiblings && pkg?.schedule_group) {
+          const siblings = await getEligibleSyncSiblings(supabase, pkg.id, pkg.schedule_group);
+          if (siblings.length > 0) {
+            await supabase
+              .from('questions')
+              .update({
+                question_text: nextText,
+                options_json: nextOpts,
+                correct_option: nextCorrect,
+                points: nextPoints,
+              })
+              .in(
+                'package_id',
+                siblings.map((s) => s.id)
+              )
+              .eq('question_text', existing.question_text);
+          }
+        }
 
         return jsonResponse(req, { success: true });
       }
 
       if (method === 'DELETE') {
-        const { data: deleted } = await supabase
-          .from('questions')
-          .delete()
-          .eq('id', qId)
-          .select('id');
+        await supabase.from('questions').delete().eq('id', qId);
 
-        if (!deleted || deleted.length === 0) {
-          return jsonResponse(req, { error: 'Soal tidak ditemukan.' }, 404);
+        if (pkg?.schedule_group) {
+          const siblings = await getEligibleSyncSiblings(supabase, pkg.id, pkg.schedule_group);
+          if (siblings.length > 0) {
+            await supabase
+              .from('questions')
+              .delete()
+              .in(
+                'package_id',
+                siblings.map((s) => s.id)
+              )
+              .eq('question_text', existing.question_text);
+          }
         }
+
         return jsonResponse(req, { success: true });
       }
     }
@@ -2249,6 +2751,7 @@ Deno.serve(async (req: Request) => {
     if (method === 'GET' && path === '/students') {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
+      const isAdmin = auth.teacher!.role === 'ADMIN';
 
       const classIdParam = url.searchParams.get('classId');
       const classId = classIdParam ? Number(classIdParam) : null;
@@ -2257,7 +2760,24 @@ Deno.serve(async (req: Request) => {
         .from('students')
         .select('id, nis, name, class_id, pin_hash, pin_encrypted, pin_updated_at, classes(name)');
 
-      if (classId) {
+      if (!isAdmin) {
+        const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+        if (scope.classIds.length === 0) {
+          return jsonResponse(req, { students: [] });
+        }
+        if (classId) {
+          if (!scope.classIds.includes(classId)) {
+            return jsonResponse(
+              req,
+              { error: 'Akses ditolak. Anda hanya dapat melihat data siswa pada kelas penugasan Anda.' },
+              403
+            );
+          }
+          query = query.eq('class_id', classId);
+        } else {
+          query = query.in('class_id', scope.classIds);
+        }
+      } else if (classId) {
         query = query.eq('class_id', classId);
       }
 
@@ -2308,6 +2828,17 @@ Deno.serve(async (req: Request) => {
 
       if (!nis?.trim() || !name?.trim() || !classId) {
         return jsonResponse(req, { error: 'NIS, nama siswa, dan kelas wajib diisi.' }, 400);
+      }
+
+      if (!isAdmin) {
+        const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+        if (!scope.classIds.includes(Number(classId))) {
+          return jsonResponse(
+            req,
+            { error: 'Akses ditolak. Anda hanya dapat menambahkan siswa ke kelas penugasan Anda.' },
+            403
+          );
+        }
       }
 
       const trimmedCustomPin = customPin?.trim() || '';
@@ -2375,7 +2906,7 @@ Deno.serve(async (req: Request) => {
       if (method === 'PUT') {
         const { data: existing } = await supabase
           .from('students')
-          .select('id')
+          .select('id, class_id')
           .eq('id', studentId)
           .maybeSingle();
 
@@ -2395,6 +2926,17 @@ Deno.serve(async (req: Request) => {
 
         if (!cleanNis || !cleanName || !Number.isFinite(cleanClassId) || cleanClassId <= 0) {
           return jsonResponse(req, { error: 'NIS, nama siswa, dan kelas wajib diisi.' }, 400);
+        }
+
+        if (auth.teacher!.role !== 'ADMIN') {
+          const scope = await getTeacherAssignmentScope(auth.teacher!.teacherId);
+          if (!scope.classIds.includes(existing.class_id) || !scope.classIds.includes(cleanClassId)) {
+            return jsonResponse(
+              req,
+              { error: 'Akses ditolak. Anda hanya dapat mengubah data siswa pada kelas penugasan Anda.' },
+              403
+            );
+          }
         }
 
         const { data: cls } = await supabase
@@ -2506,6 +3048,14 @@ Deno.serve(async (req: Request) => {
       const auth = await requireTeacherAuth(req, supabase);
       if (auth.errorResponse) return auth.errorResponse;
       const isAdmin = auth.teacher!.role === 'ADMIN';
+      const teacherScope = isAdmin ? null : await getTeacherAssignmentScope(auth.teacher!.teacherId);
+      if (teacherScope && teacherScope.classIds.length === 0) {
+        return jsonResponse(
+          req,
+          { error: 'Akun Anda belum memiliki penugasan kelas mengajar dari Admin Sekolah.' },
+          403
+        );
+      }
 
       const { rawText, updateExisting = false } = await readJsonBody<{
         rawText?: string;
@@ -2604,6 +3154,14 @@ Deno.serve(async (req: Request) => {
 
         let classRow = classMap.get(rawClass.toLowerCase());
         if (!classRow) {
+          if (!isAdmin) {
+            errors.push({
+              lineNumber,
+              raw: line,
+              reason: `Kelas "${rawClass}" tidak ditemukan atau bukan bagian dari penugasan mengajar Anda.`,
+            });
+            continue;
+          }
           const matchGrade = rawClass.match(/^(\d+)/);
           const gradeLevel = matchGrade ? Number(matchGrade[1]) : 8;
           const upperName = rawClass.toUpperCase();
@@ -2623,9 +3181,18 @@ Deno.serve(async (req: Request) => {
           continue;
         }
 
+        if (teacherScope && !teacherScope.classIds.includes(classRow.id)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: `Kelas "${classRow.name}" bukan bagian dari penugasan mengajar Anda.`,
+          });
+          continue;
+        }
+
         const { data: existingStudent } = await supabase
           .from('students')
-          .select('id, nis, name, pin_hash, pin_encrypted')
+          .select('id, nis, name, class_id, pin_hash, pin_encrypted')
           .eq('nis', nis)
           .maybeSingle();
 
@@ -2635,6 +3202,15 @@ Deno.serve(async (req: Request) => {
             nis,
             name,
             reason: 'NIS sudah terdaftar (lewati duplikat).',
+          });
+          continue;
+        }
+
+        if (existingStudent && updateExisting && teacherScope && !teacherScope.classIds.includes(existingStudent.class_id)) {
+          errors.push({
+            lineNumber,
+            raw: line,
+            reason: `Siswa NIS "${nis}" terdaftar di kelas di luar penugasan mengajar Anda.`,
           });
           continue;
         }
@@ -2731,6 +3307,21 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
       }
 
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access === 'NONE') {
+        return jsonResponse(req, { error: 'Anda tidak memiliki akses memantau paket ujian ini.' }, 403);
+      }
+      const isProctorOnly = access === 'PROCTOR';
+
+      const teacherIds = [pkg.teacher_id, pkg.proctor_id].filter(
+        (id): id is number => typeof id === 'number' && id > 0
+      );
+      const { data: tRows } =
+        teacherIds.length > 0
+          ? await supabase.from('teachers').select('id, name').in('id', teacherIds)
+          : { data: [] };
+      const tMap = new Map(((tRows || []) as Array<{ id: number; name: string }>).map((t) => [t.id, t.name]));
+
       const { count: totalQuestionsCount } = await supabase
         .from('questions')
         .select('id', { count: 'exact', head: true })
@@ -2815,8 +3406,8 @@ Deno.serve(async (req: Request) => {
             totalQuestions,
             violationCount: es?.violation_count ?? 0,
             maxViolationsAllowed: pkg.max_violations + (es?.unlock_bonus || 0),
-            score: es?.score ?? null,
-            correctCount: es?.correct_count ?? null,
+            score: isProctorOnly ? null : (es?.score ?? null),
+            correctCount: isProctorOnly ? null : (es?.correct_count ?? null),
           };
         })
         .sort(
@@ -2847,6 +3438,10 @@ Deno.serve(async (req: Request) => {
           title: pkg.title,
           subjectName: subj?.name || '',
           className: cls?.name || '',
+          teacherName: tMap.get(pkg.teacher_id) || '',
+          proctorName: pkg.proctor_id ? tMap.get(pkg.proctor_id) || null : null,
+          examDate: pkg.exam_date || '',
+          accessRole: access,
           durationMinutes: pkg.duration_minutes,
           isActive: pkg.is_active === 1,
           maxViolations: pkg.max_violations,
@@ -2865,15 +3460,11 @@ Deno.serve(async (req: Request) => {
       if (auth.errorResponse) return auth.errorResponse;
       const sessionId = Number(unlockMatch[1]);
 
-      const { data: session } = await supabase
-        .from('exam_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (!session) {
-        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      const check = await checkSupabaseSessionManageAccess(supabase, sessionId, auth.teacher!);
+      if (!check.session || !check.pkg) {
+        return jsonResponse(req, { error: check.errorMessage }, check.errorStatus || 404);
       }
+      const { session, pkg } = check;
 
       if (session.status !== 'LOCKED_VIOLATION') {
         return jsonResponse(
@@ -2889,13 +3480,7 @@ Deno.serve(async (req: Request) => {
         .update({ status: 'IN_PROGRESS', unlock_bonus: newBonus })
         .eq('id', sessionId);
 
-      const { data: pkg } = await supabase
-        .from('exam_packages')
-        .select('max_violations')
-        .eq('id', session.package_id)
-        .single();
-
-      const maxViolationsAllowed = (pkg?.max_violations || 3) + newBonus;
+      const maxViolationsAllowed = (pkg.max_violations || 3) + newBonus;
 
       await broadcastPackageEvent(supabase, {
         type: 'session:unlocked',
@@ -2923,15 +3508,11 @@ Deno.serve(async (req: Request) => {
       if (auth.errorResponse) return auth.errorResponse;
       const sessionId = Number(resetDeviceMatch[1]);
 
-      const { data: session } = await supabase
-        .from('exam_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (!session) {
-        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      const check = await checkSupabaseSessionManageAccess(supabase, sessionId, auth.teacher!);
+      if (!check.session) {
+        return jsonResponse(req, { error: check.errorMessage }, check.errorStatus || 404);
       }
+      const { session } = check;
 
       if (session.status === 'SUBMITTED') {
         return jsonResponse(
@@ -2969,15 +3550,11 @@ Deno.serve(async (req: Request) => {
       if (auth.errorResponse) return auth.errorResponse;
       const sessionId = Number(forceSubmitMatch[1]);
 
-      const { data: session } = await supabase
-        .from('exam_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (!session) {
-        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      const check = await checkSupabaseSessionManageAccess(supabase, sessionId, auth.teacher!);
+      if (!check.session) {
+        return jsonResponse(req, { error: check.errorMessage }, check.errorStatus || 404);
       }
+      const { session, access } = check;
 
       if (session.status === 'SUBMITTED') {
         return jsonResponse(
@@ -2998,12 +3575,13 @@ Deno.serve(async (req: Request) => {
         timestamp: Date.now(),
       });
 
+      const isProctorOnly = access === 'PROCTOR';
       return jsonResponse(req, {
         success: true,
         sessionId,
         status: 'SUBMITTED',
-        score: finalized.score,
-        correctCount: finalized.correctCount,
+        score: isProctorOnly ? null : finalized.score,
+        correctCount: isProctorOnly ? null : finalized.correctCount,
         totalQuestions: finalized.totalQuestions,
       });
     }
@@ -3017,15 +3595,11 @@ Deno.serve(async (req: Request) => {
       const { extraMinutes = 10 } = await readJsonBody<{ extraMinutes?: number }>(req);
       const cleanMinutes = Math.max(1, Math.min(60, Math.round(Number(extraMinutes) || 10)));
 
-      const { data: session } = await supabase
-        .from('exam_sessions')
-        .select('*')
-        .eq('id', sessionId)
-        .maybeSingle();
-
-      if (!session) {
-        return jsonResponse(req, { error: 'Sesi ujian siswa tidak ditemukan.' }, 404);
+      const check = await checkSupabaseSessionManageAccess(supabase, sessionId, auth.teacher!);
+      if (!check.session) {
+        return jsonResponse(req, { error: check.errorMessage }, check.errorStatus || 404);
       }
+      const { session } = check;
 
       if (session.status === 'SUBMITTED') {
         return jsonResponse(
@@ -3067,13 +3641,36 @@ Deno.serve(async (req: Request) => {
 
       const { data: pkg } = await supabase
         .from('exam_packages')
-        .select('id, title, class_id, subjects(name), classes(name)')
+        .select('id, title, class_id, teacher_id, proctor_id, exam_date, kkm, subjects(name), classes(name)')
         .eq('id', pkgId)
         .maybeSingle();
 
       if (!pkg) {
         return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
       }
+
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access === 'NONE') {
+        return jsonResponse(req, { error: 'Anda tidak memiliki akses melihat rekap paket ujian ini.' }, 403);
+      }
+      const isProctorOnly = access === 'PROCTOR';
+
+      if (isCsv && isProctorOnly) {
+        return jsonResponse(
+          req,
+          { error: 'Guru Pengawas hanya dapat memantau status penyelesaian peserta dan tidak dapat mengunduh rekap nilai.' },
+          403
+        );
+      }
+
+      const teacherIds = [pkg.teacher_id, pkg.proctor_id].filter(
+        (id): id is number => typeof id === 'number' && id > 0
+      );
+      const { data: tRows } =
+        teacherIds.length > 0
+          ? await supabase.from('teachers').select('id, name').in('id', teacherIds)
+          : { data: [] };
+      const tMap = new Map(((tRows || []) as Array<{ id: number; name: string }>).map((t) => [t.id, t.name]));
 
       const { count: totalQuestionsCount } = await supabase
         .from('questions')
@@ -3103,40 +3700,87 @@ Deno.serve(async (req: Request) => {
           name: st.name as string,
           class_name: cls?.name || '',
           status: es?.status || 'NOT_STARTED',
-          correct_count: es?.correct_count ?? null,
+          correct_count: isProctorOnly ? null : (es?.correct_count ?? null),
           total_questions: es?.total_questions ?? totalQuestions,
-          score: es?.score ?? null,
+          score: isProctorOnly ? null : (es?.score ?? null),
           violation_count: es?.violation_count ?? 0,
           submitted_at: es?.submitted_at ?? null,
         };
       });
 
       if (isCsv) {
-        const header = [
-          'NIS',
-          'Nama Siswa',
-          'Kelas',
-          'Benar',
-          'Total Soal',
-          'Nilai Akhir',
-          'Status',
-          'Jumlah Pelanggaran',
+        const reqUrl = new URL(req.url);
+        const rawKkmParam = reqUrl.searchParams.get('kkm');
+        const parsedKkm = rawKkmParam !== null ? Number(rawKkmParam) : NaN;
+        const effectiveKkm =
+          Number.isFinite(parsedKkm) && parsedKkm >= 0 && parsedKkm <= 100
+            ? Math.round(parsedKkm)
+            : pkg.kkm ?? 75;
+
+        const sortedRecords = [...records].sort((a, b) => {
+          const sa = a.status === 'SUBMITTED' && a.score !== null ? Number(a.score) : -1;
+          const sb = b.status === 'SUBMITTED' && b.score !== null ? Number(b.score) : -1;
+          return sb - sa || a.name.localeCompare(b.name);
+        });
+
+        const submittedRows = sortedRecords.filter((r) => r.status === 'SUBMITTED' && r.score !== null);
+        const scores = submittedRows.map((r) => Number(r.score || 0));
+        const avgScore =
+          scores.length > 0 ? (scores.reduce((acc, val) => acc + val, 0) / scores.length).toFixed(1) : '-';
+        const maxScore = scores.length > 0 ? String(Math.max(...scores)) : '-';
+        const minScore = scores.length > 0 ? String(Math.min(...scores)) : '-';
+        const passedCount = submittedRows.filter((r) => Number(r.score || 0) >= effectiveKkm).length;
+        const remedialCount = submittedRows.filter((r) => Number(r.score || 0) < effectiveKkm).length;
+        const passRate = submittedRows.length > 0 ? Math.round((passedCount / submittedRows.length) * 100) : 0;
+
+        const subjName = (pkg.subjects as unknown as { name: string } | null)?.name || '';
+        const clsName = (pkg.classes as unknown as { name: string } | null)?.name || '';
+
+        const lines: string[] = [
+          [escapeCsvField('Sekolah'), escapeCsvField('MTs Nurul Islam Gunung Sari')].join(','),
+          [escapeCsvField('Judul Ujian'), escapeCsvField(pkg.title)].join(','),
+          [escapeCsvField('Kelas'), escapeCsvField(clsName)].join(','),
+          [escapeCsvField('Mata Pelajaran'), escapeCsvField(subjName)].join(','),
+          [escapeCsvField('Guru Mapel'), escapeCsvField(tMap.get(pkg.teacher_id) || '-')].join(','),
+          [escapeCsvField('Guru Pengawas'), escapeCsvField(pkg.proctor_id ? tMap.get(pkg.proctor_id) || 'Belum ditugaskan' : 'Belum ditugaskan')].join(','),
+          [escapeCsvField('Tanggal Ujian'), escapeCsvField(pkg.exam_date || '-')].join(','),
+          [escapeCsvField('KKM'), escapeCsvField(effectiveKkm)].join(','),
+          '',
+          [escapeCsvField('RINGKASAN HASIL UJIAN'), escapeCsvField('Nilai / Jumlah')].join(','),
+          [escapeCsvField('Peserta Selesai'), escapeCsvField(`${submittedRows.length} / ${sortedRecords.length}`)].join(','),
+          [escapeCsvField('Rata-rata Nilai'), escapeCsvField(`${avgScore} (Tertinggi: ${maxScore}, Terendah: ${minScore})`)].join(','),
+          [escapeCsvField(`Tuntas (>= ${effectiveKkm})`), escapeCsvField(`${passedCount} siswa (${passRate}%)`)].join(','),
+          [escapeCsvField(`Remedial (< ${effectiveKkm})`), escapeCsvField(`${remedialCount} siswa`)].join(','),
+          '',
+          ['No', 'NIS', 'Nama Siswa', 'Kelas', 'Benar', 'Total Soal', 'Nilai Akhir', 'Ketuntasan', 'Status', 'Jumlah Pelanggaran'].join(','),
         ];
-        const lines = [header.join(',')];
-        for (const r of records) {
+
+        sortedRecords.forEach((r, idx) => {
+          const isSubmitted = r.status === 'SUBMITTED' && r.score !== null;
+          const ketuntasan = isSubmitted ? (Number(r.score) >= effectiveKkm ? 'Tuntas' : 'Remedial') : '-';
+          const statusLabel =
+            r.status === 'SUBMITTED'
+              ? 'Selesai'
+              : r.status === 'IN_PROGRESS'
+                ? 'Mengerjakan'
+                : r.status === 'LOCKED_VIOLATION'
+                  ? 'Terkunci'
+                  : 'Belum Mulai';
           lines.push(
             [
+              escapeCsvField(idx + 1),
               escapeCsvField(r.nis),
               escapeCsvField(r.name),
               escapeCsvField(r.class_name),
-              escapeCsvField(r.correct_count ?? 0),
+              escapeCsvField(isSubmitted ? (r.correct_count ?? 0) : '-'),
               escapeCsvField(r.total_questions),
-              escapeCsvField(r.score ?? 0),
-              escapeCsvField(r.status),
+              escapeCsvField(isSubmitted ? r.score : '-'),
+              escapeCsvField(ketuntasan),
+              escapeCsvField(statusLabel),
               escapeCsvField(r.violation_count),
             ].join(',')
           );
-        }
+        });
         const safeSlug = pkg.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
         return new Response('\uFEFF' + lines.join('\n'), {
           status: 200,
@@ -3148,84 +3792,87 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const { data: questions } = await supabase
-        .from('questions')
-        .select('id, question_text, options_json, correct_option, points')
-        .eq('package_id', pkgId)
-        .order('id', { ascending: true });
+      let questionAnalytics: Array<Record<string, unknown>> = [];
+      if (!isProctorOnly) {
+        const { data: questions } = await supabase
+          .from('questions')
+          .select('id, question_text, options_json, correct_option, points')
+          .eq('package_id', pkgId)
+          .order('id', { ascending: true });
 
-      const submittedSessionIds = (sessions || [])
-        .filter((s: SessionRow) => s.status === 'SUBMITTED')
-        .map((s: SessionRow) => s.id);
+        const submittedSessionIds = (sessions || [])
+          .filter((s: SessionRow) => s.status === 'SUBMITTED')
+          .map((s: SessionRow) => s.id);
 
-      const answerByQuestion = new Map<number, string[]>();
-      if (submittedSessionIds.length > 0) {
-        const { data: ansRows } = await supabase
-          .from('student_answers')
-          .select('question_id, selected_option')
-          .in('session_id', submittedSessionIds);
+        const answerByQuestion = new Map<number, string[]>();
+        if (submittedSessionIds.length > 0) {
+          const { data: ansRows } = await supabase
+            .from('student_answers')
+            .select('question_id, selected_option')
+            .in('session_id', submittedSessionIds);
 
-        for (const a of (ansRows || []) as Array<{ question_id: number; selected_option: string }>) {
-          const list = answerByQuestion.get(a.question_id) || [];
-          list.push(a.selected_option);
-          answerByQuestion.set(a.question_id, list);
+          for (const a of (ansRows || []) as Array<{ question_id: number; selected_option: string }>) {
+            const list = answerByQuestion.get(a.question_id) || [];
+            list.push(a.selected_option);
+            answerByQuestion.set(a.question_id, list);
+          }
         }
+
+        const totalSubmitted = submittedSessionIds.length;
+        questionAnalytics = (questions || []).map(
+          (
+            q: {
+              id: number;
+              question_text: string;
+              options_json: string;
+              correct_option: string;
+              points: number;
+            },
+            index: number
+          ) => {
+            let parsedOptions: Array<{ key: string; text: string }> = [];
+            try {
+              parsedOptions = JSON.parse(q.options_json);
+            } catch {
+              parsedOptions = [];
+            }
+            const optionDistribution: Record<string, number> = {};
+            for (const opt of parsedOptions) {
+              optionDistribution[opt.key] = 0;
+            }
+
+            const answers = answerByQuestion.get(q.id) || [];
+            let correctCount = 0;
+            let wrongCount = 0;
+            for (const sel of answers) {
+              if (sel) {
+                optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
+              }
+              if (sel === q.correct_option) {
+                correctCount++;
+              } else if (sel) {
+                wrongCount++;
+              }
+            }
+            const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
+            const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
+
+            return {
+              questionId: q.id,
+              number: index + 1,
+              questionText: q.question_text,
+              correctOption: q.correct_option,
+              points: q.points,
+              totalSubmitted,
+              correctCount,
+              wrongCount,
+              blankCount,
+              correctRate,
+              optionDistribution,
+            };
+          }
+        );
       }
-
-      const totalSubmitted = submittedSessionIds.length;
-      const questionAnalytics = (questions || []).map(
-        (
-          q: {
-            id: number;
-            question_text: string;
-            options_json: string;
-            correct_option: string;
-            points: number;
-          },
-          index: number
-        ) => {
-          let parsedOptions: Array<{ key: string; text: string }> = [];
-          try {
-            parsedOptions = JSON.parse(q.options_json);
-          } catch {
-            parsedOptions = [];
-          }
-          const optionDistribution: Record<string, number> = {};
-          for (const opt of parsedOptions) {
-            optionDistribution[opt.key] = 0;
-          }
-
-          const answers = answerByQuestion.get(q.id) || [];
-          let correctCount = 0;
-          let wrongCount = 0;
-          for (const sel of answers) {
-            if (sel) {
-              optionDistribution[sel] = (optionDistribution[sel] || 0) + 1;
-            }
-            if (sel === q.correct_option) {
-              correctCount++;
-            } else if (sel) {
-              wrongCount++;
-            }
-          }
-          const blankCount = Math.max(0, totalSubmitted - correctCount - wrongCount);
-          const correctRate = totalSubmitted > 0 ? Math.round((correctCount / totalSubmitted) * 100) : 0;
-
-          return {
-            questionId: q.id,
-            number: index + 1,
-            questionText: q.question_text,
-            correctOption: q.correct_option,
-            points: q.points,
-            totalSubmitted,
-            correctCount,
-            wrongCount,
-            blankCount,
-            correctRate,
-            optionDistribution,
-          };
-        }
-      );
 
       const subj = pkg.subjects as unknown as { name: string } | null;
       const cls = pkg.classes as unknown as { name: string } | null;
@@ -3236,6 +3883,11 @@ Deno.serve(async (req: Request) => {
           title: pkg.title,
           subjectName: subj?.name || '',
           className: cls?.name || '',
+          teacherName: tMap.get(pkg.teacher_id) || '',
+          proctorName: pkg.proctor_id ? tMap.get(pkg.proctor_id) || null : null,
+          examDate: pkg.exam_date || '',
+          kkm: pkg.kkm ?? 75,
+          accessRole: access,
           totalQuestions,
         },
         records,
@@ -3259,16 +3911,39 @@ Deno.serve(async (req: Request) => {
         return jsonResponse(req, { error: 'Sesi ujian tidak ditemukan.' }, 404);
       }
 
-      const [{ data: student }, { data: pkg }, { data: questions }, { data: ansRows }] = await Promise.all([
+      const { data: pkg } = await supabase
+        .from('exam_packages')
+        .select('id, title, teacher_id, proctor_id, exam_date, kkm, subjects(name), classes(name)')
+        .eq('id', session.package_id)
+        .maybeSingle();
+
+      if (!pkg) {
+        return jsonResponse(req, { error: 'Paket ujian tidak ditemukan.' }, 404);
+      }
+
+      const access = getPackageAccess(pkg, auth.teacher!);
+      if (access !== 'ADMIN' && access !== 'OWNER') {
+        return jsonResponse(
+          req,
+          { error: 'Akses ditolak. Guru Pengawas tidak diperkenankan membuka lembar jawaban & kunci soal.' },
+          403
+        );
+      }
+
+      const teacherIds = [pkg.teacher_id, pkg.proctor_id].filter(
+        (id): id is number => typeof id === 'number' && id > 0
+      );
+      const { data: revTeachers } =
+        teacherIds.length > 0
+          ? await supabase.from('teachers').select('id, name').in('id', teacherIds)
+          : { data: [] };
+      const revTMap = new Map(((revTeachers || []) as Array<{ id: number; name: string }>).map((t) => [t.id, t.name]));
+
+      const [{ data: student }, { data: questions }, { data: ansRows }] = await Promise.all([
         supabase
           .from('students')
           .select('nis, name, classes(name)')
           .eq('id', session.student_id)
-          .maybeSingle(),
-        supabase
-          .from('exam_packages')
-          .select('id, title, subjects(name), classes(name)')
-          .eq('id', session.package_id)
           .maybeSingle(),
         supabase
           .from('questions')
@@ -3344,6 +4019,10 @@ Deno.serve(async (req: Request) => {
           title: pkg?.title || '',
           subjectName: pkgSubj,
           className: pkgCls,
+          teacherName: revTMap.get(pkg.teacher_id) || '',
+          proctorName: pkg.proctor_id ? revTMap.get(pkg.proctor_id) || null : null,
+          examDate: pkg.exam_date || '',
+          kkm: pkg.kkm ?? 75,
         },
         items,
       });

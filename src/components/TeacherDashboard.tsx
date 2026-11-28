@@ -19,6 +19,7 @@ import { teacherApi } from '../api';
 import type {
   ClassItem,
   ExamPackage,
+  ProctorOption,
   SubjectItem,
   TeacherAssignment,
   TeacherProfile,
@@ -84,6 +85,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [assignments, setAssignments] = useState<TeacherAssignment[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [classes, setClasses] = useState<ClassItem[]>([]);
+  const [proctorTeachers, setProctorTeachers] = useState<ProctorOption[]>([]);
   const [selectedPackageId, setSelectedPackageId] = useState<number | null>(() => initialUi.packageId);
   const [loading, setLoading] = useState(true);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -111,11 +113,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   useEffect(() => {
     if (!showPasswordModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowPasswordModal(false);
+      if (e.key === 'Escape' && !passwordSaving) setShowPasswordModal(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showPasswordModal]);
+  }, [showPasswordModal, passwordSaving]);
 
   function openPasswordModal() {
     setCurrentPassword('');
@@ -131,6 +133,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
+    if (passwordSaving) return;
     setPasswordError(null);
     setPasswordSuccess(null);
 
@@ -166,10 +169,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       setAssignments(ctx.assignments);
       setSubjects(ctx.subjects);
       setClasses(ctx.classes);
+      setProctorTeachers(ctx.teachers || []);
       setPackages(pkgRes.packages);
-      if (!selectedPackageId && pkgRes.packages.length > 0) {
-        setSelectedPackageId(pkgRes.packages[0].id);
-      }
+      setSelectedPackageId((prev) => {
+        if (prev && pkgRes.packages.some((p) => p.id === prev)) return prev;
+        return pkgRes.packages[0]?.id ?? null;
+      });
     } catch (err) {
       const status = (err as { status?: number } | null)?.status;
       if (status === 401) {
@@ -353,10 +358,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               {activeTab === 'packages' && (
                 <PackagesView
                   token={token}
+                  teacherRole={teacher.role}
                   packages={packages}
                   assignments={assignments}
                   subjects={subjects}
                   classes={classes}
+                  teachers={proctorTeachers}
                   onRefresh={loadAll}
                   onOpenMonitoring={(pkgId) => {
                     setSelectedPackageId(pkgId);
@@ -385,6 +392,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               {activeTab === 'questions' && (
                 <QuestionBankView
                   token={token}
+                  teacherRole={teacher.role}
+                  assignments={assignments}
                   packages={packages}
                   subjects={subjects}
                   classes={classes}
@@ -441,20 +450,29 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       {showPasswordModal && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowPasswordModal(false);
+          onMouseDown={(e) => {
+            const isDirty = Boolean(currentPassword || newPassword || confirmPassword);
+            if (e.target === e.currentTarget && !passwordSaving && !isDirty) {
+              setShowPasswordModal(false);
+            }
           }}
         >
-          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Ubah Kata Sandi Akun"
+            className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6 shadow-xl"
+          >
             <div className="flex items-center justify-between gap-4 mb-4">
               <div>
                 <h3 className="font-display text-base font-bold text-slate-900">Ubah Kata Sandi Akun</h3>
-                <p className="text-xs text-slate-500 mt-0.5">{teacher.email}</p>
+                <p className="text-xs text-slate-500 font-mono mt-0.5">NIP / ID: {teacher.nip}</p>
               </div>
               <button
                 type="button"
+                disabled={passwordSaving}
                 onClick={() => setShowPasswordModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40 rounded-lg hover:bg-slate-100 cursor-pointer"
                 aria-label="Tutup modal"
               >
                 <X className="w-4 h-4" />
@@ -545,8 +563,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <div className="pt-2 flex items-center justify-end gap-2">
                 <button
                   type="button"
+                  disabled={passwordSaving}
                   onClick={() => setShowPasswordModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-lg cursor-pointer"
                 >
                   Tutup
                 </button>

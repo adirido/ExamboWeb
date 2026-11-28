@@ -12,10 +12,18 @@ import {
   Eye,
   X,
   Check,
+  FileDown,
 } from 'lucide-react';
 import { teacherApi } from '../api';
+import {
+  SCHOOL_NAME,
+  downloadRecapReportPdf,
+  downloadStudentAnswerSheetPdf,
+  formatExamDateIndo,
+} from '../utils/pdfExport';
 import type {
   ExamPackage,
+  PackageAccessRole,
   QuestionAnalyticRow,
   RecapRow,
   SessionReviewPayload,
@@ -52,13 +60,20 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   onSelectPackage,
 }) => {
   const activePkgId = selectedPackageId || packages[0]?.id || null;
+  const activePkg = packages.find((p) => p.id === activePkgId) || null;
   const [pkgInfo, setPkgInfo] = useState<{
     id: number;
     title: string;
     subjectName: string;
     className: string;
+    teacherName?: string;
+    proctorName?: string | null;
+    examDate?: string;
+    kkm?: number;
+    accessRole?: PackageAccessRole;
     totalQuestions: number;
   } | null>(null);
+  const isProctorOnly = (pkgInfo?.accessRole || activePkg?.access_role) === 'PROCTOR';
   const [records, setRecords] = useState<RecapRow[]>([]);
   const [questionAnalytics, setQuestionAnalytics] = useState<QuestionAnalyticRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,7 +85,7 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   const [kkm, setKkm] = useState<number>(() => readInitialKkm());
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<RecapFilterMode>('ALL');
-  const [sortBy, setSortBy] = useState<RecapSortMode>('name');
+  const [sortBy, setSortBy] = useState<RecapSortMode>('score-desc');
 
   // Student answer sheet review modal
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -98,6 +113,13 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   }, [reviewLoading, reviewData]);
 
   useEffect(() => {
+    if (!isProctorOnly) return;
+    if (subTab !== 'scores') setSubTab('scores');
+    if (filterMode === 'PASSED' || filterMode === 'REMEDIAL') setFilterMode('ALL');
+    if (sortBy === 'score-desc' || sortBy === 'score-asc') setSortBy('name');
+  }, [isProctorOnly, subTab, filterMode, sortBy]);
+
+  useEffect(() => {
     if (!activePkgId) return;
     loadRecap(activePkgId);
   }, [activePkgId]);
@@ -110,6 +132,9 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
       setPkgInfo(res.package);
       setRecords(res.records);
       setQuestionAnalytics(res.questionAnalytics || []);
+      if (typeof res.package.kkm === 'number' && Number.isFinite(res.package.kkm)) {
+        setKkm(res.package.kkm);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal memuat rekap nilai.');
     } finally {
@@ -123,12 +148,31 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
     setDownloading(true);
     try {
       const slug = pkgInfo.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      await teacherApi.downloadRecapCsv(token, activePkgId, `rekap-nilai-${slug}.csv`);
+      await teacherApi.downloadRecapCsv(token, activePkgId, `rekap-nilai-${slug}.csv`, kkm);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal mengekspor CSV.');
     } finally {
       setDownloading(false);
     }
+  }
+
+  function handleDownloadRecapPdf() {
+    if (!pkgInfo || records.length === 0) return;
+    downloadRecapReportPdf({
+      pkgInfo,
+      kkm,
+      summary: {
+        totalParticipants: records.length,
+        submittedCount: submittedRecords.length,
+        avgScore,
+        maxScore,
+        minScore,
+        passedCount,
+        passRate,
+        remedialCount,
+      },
+      records,
+    });
   }
 
   function handlePrintRecap() {
@@ -143,6 +187,7 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
   }
 
   async function handleOpenReview(sessionId: number) {
+    if (reviewLoading) return;
     setReviewLoading(true);
     setReviewError(null);
     setReviewData(null);
@@ -155,6 +200,12 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
       setReviewLoading(false);
     }
   }
+
+  const completedRecords = records.filter((r) => r.status === 'SUBMITTED');
+  const inProgressOrLockedCount = records.filter(
+    (r) => r.status === 'IN_PROGRESS' || r.status === 'LOCKED_VIOLATION'
+  ).length;
+  const notStartedRecapCount = records.filter((r) => r.status === 'NOT_STARTED').length;
 
   const submittedRecords = records.filter((r) => r.status === 'SUBMITTED' && r.score !== null);
   const scoresList = submittedRecords.map((r) => Number(r.score || 0));
@@ -226,10 +277,12 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
       <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div className="min-w-0">
           <h2 className="font-display text-lg font-bold text-slate-900">
-            Rekap Nilai, Analitik &amp; Lembar Jawaban
+            {isProctorOnly ? 'Status Penyelesaian Peserta Ujian' : 'Rekap Nilai, Analitik & Lembar Jawaban'}
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Pantau ketuntasan KKM, analisis tingkat kesulitan butir soal, tinjau jawaban per siswa, dan ekspor ke CSV atau PDF.
+            {isProctorOnly
+              ? 'Pantau daftar siswa yang sudah selesai, sedang mengerjakan, terkunci, atau belum mulai ujian pada sesi yang Anda awasi.'
+              : 'Pantau ketuntasan KKM, analisis tingkat kesulitan butir soal, tinjau jawaban per siswa, dan ekspor ke CSV atau PDF.'}
           </p>
         </div>
 
@@ -247,78 +300,157 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
             ))}
           </select>
 
-          <button
-            type="button"
-            disabled={!activePkgId || records.length === 0 || subTab !== 'scores'}
-            onClick={handlePrintRecap}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-            title="Cetak daftar nilai ukuran A4 atau simpan sebagai PDF"
-          >
-            <Printer className="w-3.5 h-3.5" aria-hidden="true" />
-            Cetak / PDF
-          </button>
+          {!isProctorOnly && (
+            <>
+              <button
+                type="button"
+                disabled={!activePkgId || records.length === 0 || subTab !== 'scores'}
+                onClick={handleDownloadRecapPdf}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                title="Unduh file PDF rekap nilai ukuran kertas A4"
+              >
+                <FileDown className="w-3.5 h-3.5 text-blue-700" aria-hidden="true" />
+                Unduh PDF (A4)
+              </button>
 
-          <button
-            type="button"
-            disabled={!activePkgId || downloading}
-            onClick={handleExportCsv}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Download className="w-4 h-4" aria-hidden="true" />
-            {downloading ? 'Mengunduh...' : 'Unduh CSV'}
-          </button>
+              <button
+                type="button"
+                disabled={!activePkgId || records.length === 0 || subTab !== 'scores'}
+                onClick={handlePrintRecap}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+                title="Cetak daftar nilai ukuran A4"
+              >
+                <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                Cetak A4
+              </button>
+
+              <button
+                type="button"
+                disabled={!activePkgId || downloading}
+                onClick={handleExportCsv}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 rounded-lg hover:bg-blue-800 disabled:opacity-50 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Download className="w-4 h-4" aria-hidden="true" />
+                {downloading ? 'Mengunduh...' : 'Unduh CSV'}
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {pkgInfo && !isProctorOnly && (
+        <div className="bg-white border border-slate-200 rounded-xl px-5 py-3.5 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-xs text-slate-600">
+          <div className="font-display font-bold text-slate-900">{SCHOOL_NAME}</div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span>Kelas: <strong className="text-slate-900">{pkgInfo.className}</strong></span>
+            <span>Mapel: <strong className="text-slate-900">{pkgInfo.subjectName}</strong></span>
+            <span>Guru Mapel: <strong className="text-slate-900">{pkgInfo.teacherName || '-'}</strong></span>
+            <span>Pengawas: <strong className="text-slate-900">{pkgInfo.proctorName || 'Belum ditugaskan'}</strong></span>
+            <span>Tanggal: <strong className="text-slate-900">{formatExamDateIndo(pkgInfo.examDate)}</strong></span>
+            <span>KKM: <strong className="font-mono text-slate-900">{kkm}</strong></span>
+          </div>
+        </div>
+      )}
+
+      {isProctorOnly && (
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900">
+          <strong>Mode Guru Pengawas:</strong> Anda hanya dapat memantau status penyelesaian peserta. Nilai akhir, analisis butir soal, lembar jawaban, dan unduhan rekap hanya dapat diakses oleh Guru Mapel pembuat paket &amp; Admin.
+        </div>
+      )}
 
       {/* 4 Summary Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs font-medium text-slate-500">Peserta Selesai</div>
-          <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
-            {submittedRecords.length}
-            <span className="text-sm font-normal text-slate-400"> / {records.length}</span>
+      {isProctorOnly ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Total Peserta Kelas</div>
+            <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
+              {records.length}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              {pkgInfo ? `${pkgInfo.subjectName} · Kelas ${pkgInfo.className}` : 'Memuat paket...'}
+            </div>
           </div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            {pkgInfo ? `${pkgInfo.subjectName} · Kelas ${pkgInfo.className}` : 'Memuat paket...'}
-          </div>
-        </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs font-medium text-slate-500">Rata-rata Nilai</div>
-          <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
-            {avgScore}
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Sudah Selesai</div>
+            <div className="font-mono text-2xl font-bold text-emerald-700 tabular-nums mt-1">
+              {completedRecords.length}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              Ujian telah dikumpulkan
+            </div>
           </div>
-          <div className="text-[11px] text-slate-500 font-mono tabular-nums mt-1">
-            Tertinggi: <strong className="text-slate-800">{maxScore}</strong> · Terendah:{' '}
-            <strong className="text-slate-800">{minScore}</strong>
-          </div>
-        </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs font-medium text-slate-500">
-            Tuntas (Nilai &ge; {kkm})
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Aktif / Terkunci</div>
+            <div className="font-mono text-2xl font-bold text-blue-700 tabular-nums mt-1">
+              {inProgressOrLockedCount}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              Sedang ujian atau butuh buka kunci
+            </div>
           </div>
-          <div className="font-mono text-2xl font-bold text-emerald-700 tabular-nums mt-1">
-            {passedCount}
-            <span className="text-xs font-semibold text-emerald-600 ml-1.5">({passRate}%)</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            Dari peserta berstatus selesai
-          </div>
-        </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4">
-          <div className="text-xs font-medium text-slate-500">
-            Remedial (Nilai &lt; {kkm})
-          </div>
-          <div className="font-mono text-2xl font-bold text-amber-700 tabular-nums mt-1">
-            {remedialCount}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            Perlu pendampingan / remedial
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Belum Mulai</div>
+            <div className="font-mono text-2xl font-bold text-slate-700 tabular-nums mt-1">
+              {notStartedRecapCount}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              Belum login ke sesi ujian
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Peserta Selesai</div>
+            <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
+              {submittedRecords.length}
+              <span className="text-sm font-normal text-slate-400"> / {records.length}</span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              {pkgInfo ? `${pkgInfo.subjectName} · Kelas ${pkgInfo.className}` : 'Memuat paket...'}
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">Rata-rata Nilai</div>
+            <div className="font-mono text-2xl font-bold text-slate-900 tabular-nums mt-1">
+              {avgScore}
+            </div>
+            <div className="text-[11px] text-slate-500 font-mono tabular-nums mt-1">
+              Tertinggi: <strong className="text-slate-800">{maxScore}</strong> · Terendah:{' '}
+              <strong className="text-slate-800">{minScore}</strong>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">
+              Tuntas (Nilai &ge; {kkm})
+            </div>
+            <div className="font-mono text-2xl font-bold text-emerald-700 tabular-nums mt-1">
+              {passedCount}
+              <span className="text-xs font-semibold text-emerald-600 ml-1.5">({passRate}%)</span>
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              Dari peserta berstatus selesai
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="text-xs font-medium text-slate-500">
+              Remedial (Nilai &lt; {kkm})
+            </div>
+            <div className="font-mono text-2xl font-bold text-amber-700 tabular-nums mt-1">
+              {remedialCount}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              Perlu pendampingan / remedial
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Sub-tabs & Filter Controls */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -333,39 +465,43 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
             }`}
           >
             <FileText className="w-3.5 h-3.5" aria-hidden="true" />
-            Daftar Nilai ({records.length})
+            {isProctorOnly ? `Status Peserta (${records.length})` : `Daftar Nilai (${records.length})`}
           </button>
-          <button
-            type="button"
-            onClick={() => setSubTab('analytics')}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-              subTab === 'analytics'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
-            Analisis Butir Soal ({questionAnalytics.length})
-          </button>
+          {!isProctorOnly && (
+            <button
+              type="button"
+              onClick={() => setSubTab('analytics')}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                subTab === 'analytics'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
+              Analisis Butir Soal ({questionAnalytics.length})
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-            <span>KKM:</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={kkm}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v)) {
-                  setKkm(Math.max(0, Math.min(100, v)));
-                }
-              }}
-              className="w-16 px-2 py-1.5 text-xs font-mono font-bold text-center border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-            />
-          </label>
+          {!isProctorOnly && (
+            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+              <span>KKM:</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={kkm}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v)) {
+                    setKkm(Math.max(0, Math.min(100, v)));
+                  }
+                }}
+                className="w-16 px-2 py-1.5 text-xs font-mono font-bold text-center border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </label>
+          )}
 
           {subTab === 'scores' && (
             <>
@@ -396,8 +532,8 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                 className="px-3 py-1.5 text-xs font-medium bg-white border border-slate-300 rounded-lg text-slate-700"
               >
                 <option value="ALL">Semua Peserta</option>
-                <option value="PASSED">Tuntas (&ge; {kkm})</option>
-                <option value="REMEDIAL">Remedial (&lt; {kkm})</option>
+                {!isProctorOnly && <option value="PASSED">Tuntas (&ge; {kkm})</option>}
+                {!isProctorOnly && <option value="REMEDIAL">Remedial (&lt; {kkm})</option>}
                 <option value="INCOMPLETE">Belum Selesai</option>
                 <option value="VIOLATION">Ada Pelanggaran</option>
               </select>
@@ -409,8 +545,8 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
               >
                 <option value="name">Urutkan: Nama A–Z</option>
                 <option value="nis">Urutkan: NIS</option>
-                <option value="score-desc">Urutkan: Nilai Tertinggi</option>
-                <option value="score-asc">Urutkan: Nilai Terendah</option>
+                {!isProctorOnly && <option value="score-desc">Urutkan: Nilai Tertinggi</option>}
+                {!isProctorOnly && <option value="score-asc">Urutkan: Nilai Terendah</option>}
               </select>
             </>
           )}
@@ -440,51 +576,91 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
             loading && hasLoaded ? 'opacity-60' : 'opacity-100'
           }`}
         >
-          {/* Print-only header */}
+          {/* Print-only A4 Header & 4 Summary Cards */}
           {pkgInfo && (
-            <div className="hidden print:block px-5 py-4 border-b border-slate-300">
-              <div className="text-xs font-bold uppercase tracking-wider text-blue-700">ExamFlow Pro · Rekap Nilai Resmi</div>
-              <div className="text-base font-bold text-slate-900 mt-0.5">{pkgInfo.title}</div>
-              <div className="text-xs text-slate-600 mt-1">
-                Mapel: {pkgInfo.subjectName} · Kelas: {pkgInfo.className} · KKM: {kkm} · Rata-rata: {avgScore} · Tuntas: {passedCount}/{submittedRecords.length}
+            <div className="hidden print:block px-5 py-4 border-b border-slate-300 space-y-3">
+              <div>
+                <div className="text-sm font-bold uppercase tracking-wide text-slate-900">
+                  {SCHOOL_NAME}
+                </div>
+                <div className="text-xs font-bold text-blue-700 mt-0.5">
+                  REKAPITULASI NILAI UJIAN — {pkgInfo.title}
+                </div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] text-slate-700 mt-2">
+                  <div>Kelas: <strong>{pkgInfo.className}</strong></div>
+                  <div>Guru Pengawas: <strong>{pkgInfo.proctorName || 'Belum ditugaskan'}</strong></div>
+                  <div>Mata Pelajaran: <strong>{pkgInfo.subjectName}</strong></div>
+                  <div>Tanggal Ujian: <strong>{formatExamDateIndo(pkgInfo.examDate)}</strong></div>
+                  <div>Guru Mapel: <strong>{pkgInfo.teacherName || '-'}</strong></div>
+                  <div>KKM: <strong>{kkm}</strong></div>
+                </div>
               </div>
+
+              {!isProctorOnly && (
+                <div className="grid grid-cols-4 gap-2.5 pt-2 border-t border-slate-200">
+                  <div className="border border-slate-300 rounded p-2">
+                    <div className="text-[10px] text-slate-500">Peserta Selesai</div>
+                    <div className="font-mono text-sm font-bold text-slate-900">
+                      {submittedRecords.length} / {records.length}
+                    </div>
+                  </div>
+                  <div className="border border-slate-300 rounded p-2">
+                    <div className="text-[10px] text-slate-500">Rata-rata Nilai</div>
+                    <div className="font-mono text-sm font-bold text-slate-900">
+                      {avgScore} <span className="text-[10px] font-normal">(Max {maxScore})</span>
+                    </div>
+                  </div>
+                  <div className="border border-slate-300 rounded p-2">
+                    <div className="text-[10px] text-slate-500">Tuntas (&ge; {kkm})</div>
+                    <div className="font-mono text-sm font-bold text-emerald-700">
+                      {passedCount} ({passRate}%)
+                    </div>
+                  </div>
+                  <div className="border border-slate-300 rounded p-2">
+                    <div className="text-[10px] text-slate-500">Remedial (&lt; {kkm})</div>
+                    <div className="font-mono text-sm font-bold text-amber-700">
+                      {remedialCount}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] lg:min-w-0 table-fixed text-left border-collapse">
+            <table className={`w-full ${isProctorOnly ? 'min-w-[560px]' : 'min-w-[900px]'} lg:min-w-0 table-fixed text-left border-collapse`}>
               <colgroup>
                 <col className="w-[100px]" />
                 <col />
+                {!isProctorOnly && <col className="w-[105px]" />}
+                {!isProctorOnly && <col className="w-[95px]" />}
+                {!isProctorOnly && <col className="w-[105px]" />}
+                <col className="w-[140px]" />
                 <col className="w-[105px]" />
-                <col className="w-[95px]" />
-                <col className="w-[105px]" />
-                <col className="w-[130px]" />
-                <col className="w-[95px]" />
-                <col className="w-[125px] no-print" />
+                {!isProctorOnly && <col className="w-[125px] no-print" />}
               </colgroup>
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-500">
                   <th className="py-3 pl-5 pr-3 whitespace-nowrap">NIS</th>
                   <th className="py-3 px-3 whitespace-nowrap">Nama Siswa</th>
-                  <th className="py-3 px-3 whitespace-nowrap">Benar / Soal</th>
-                  <th className="py-3 px-3 whitespace-nowrap">Nilai Akhir</th>
-                  <th className="py-3 px-3 whitespace-nowrap">Ketuntasan</th>
+                  {!isProctorOnly && <th className="py-3 px-3 whitespace-nowrap">Benar / Soal</th>}
+                  {!isProctorOnly && <th className="py-3 px-3 whitespace-nowrap">Nilai Akhir</th>}
+                  {!isProctorOnly && <th className="py-3 px-3 whitespace-nowrap">Ketuntasan</th>}
                   <th className="py-3 px-3 whitespace-nowrap">Status</th>
-                  <th className="py-3 px-3 text-right whitespace-nowrap">Pelanggaran</th>
-                  <th className="py-3 pl-3 pr-5 text-right whitespace-nowrap no-print">Jawaban</th>
+                  <th className="py-3 pl-3 pr-5 text-right whitespace-nowrap">Pelanggaran</th>
+                  {!isProctorOnly && <th className="py-3 pl-3 pr-5 text-right whitespace-nowrap no-print">Jawaban</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
                 {!hasLoaded && loading ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-500">
-                      Memuat rekap nilai...
+                    <td colSpan={isProctorOnly ? 4 : 8} className="py-12 text-center text-slate-500">
+                      {isProctorOnly ? 'Memuat status peserta...' : 'Memuat rekap nilai...'}
                     </td>
                   </tr>
                 ) : filteredRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-500">
+                    <td colSpan={isProctorOnly ? 4 : 8} className="py-12 text-center text-slate-500">
                       Tidak ada peserta yang sesuai dengan filter pada paket ujian ini.
                     </td>
                   </tr>
@@ -500,23 +676,29 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                         <td className="py-3 px-3 font-medium text-slate-900 truncate" title={r.name}>
                           {r.name}
                         </td>
-                        <td className="py-3 px-3 font-mono text-slate-800 tabular-nums whitespace-nowrap">
-                          {isSubmitted ? `${r.correct_count ?? 0}/${r.total_questions}` : `-/${r.total_questions}`}
-                        </td>
-                        <td className="py-3 px-3 font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
-                          {isSubmitted ? r.score : '-'}
-                        </td>
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          {isSubmitted ? (
-                            isPassed ? (
-                              <span className="font-semibold text-emerald-700">Tuntas</span>
+                        {!isProctorOnly && (
+                          <td className="py-3 px-3 font-mono text-slate-800 tabular-nums whitespace-nowrap">
+                            {isSubmitted ? `${r.correct_count ?? 0}/${r.total_questions}` : `-/${r.total_questions}`}
+                          </td>
+                        )}
+                        {!isProctorOnly && (
+                          <td className="py-3 px-3 font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                            {isSubmitted ? r.score : '-'}
+                          </td>
+                        )}
+                        {!isProctorOnly && (
+                          <td className="py-3 px-3 whitespace-nowrap">
+                            {isSubmitted ? (
+                              isPassed ? (
+                                <span className="font-semibold text-emerald-700">Tuntas</span>
+                              ) : (
+                                <span className="font-semibold text-amber-700">Remedial</span>
+                              )
                             ) : (
-                              <span className="font-semibold text-amber-700">Remedial</span>
-                            )
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                        )}
                         <td className="py-3 px-3 whitespace-nowrap">
                           {r.status === 'SUBMITTED' && (
                             <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700">
@@ -539,25 +721,27 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                             </span>
                           )}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono tabular-nums whitespace-nowrap">
+                        <td className="py-3 pl-3 pr-5 text-right font-mono tabular-nums whitespace-nowrap">
                           <span className={r.violation_count > 0 ? 'font-bold text-red-700' : 'text-slate-500'}>
                             {r.violation_count}x
                           </span>
                         </td>
-                        <td className="py-3 pl-3 pr-5 text-right whitespace-nowrap no-print">
-                          {r.session_id ? (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenReview(r.session_id!)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-md cursor-pointer"
-                            >
-                              <Eye className="w-3 h-3 shrink-0" />
-                              Lihat
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-400">—</span>
-                          )}
-                        </td>
+                        {!isProctorOnly && (
+                          <td className="py-3 pl-3 pr-5 text-right whitespace-nowrap no-print">
+                            {r.session_id ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReview(r.session_id!)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-md cursor-pointer"
+                              >
+                                <Eye className="w-3 h-3 shrink-0" />
+                                Lihat
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">—</span>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })
@@ -668,14 +852,18 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
       {(reviewLoading || reviewData) && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setReviewLoading(false);
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !reviewLoading) {
               setReviewData(null);
             }
           }}
         >
-          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden shadow-xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Lembar Jawaban Siswa"
+            className="bg-white border border-slate-200 rounded-xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden shadow-xl"
+          >
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 shrink-0">
               {reviewLoading ? (
                 <div className="text-sm font-semibold text-slate-700">Memuat lembar jawaban siswa...</div>
@@ -691,13 +879,26 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                 </div>
               ) : null}
 
-              <button
-                type="button"
-                onClick={() => setReviewData(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer shrink-0"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {reviewData && (
+                  <button
+                    type="button"
+                    onClick={() => downloadStudentAnswerSheetPdf(reviewData)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+                  >
+                    <FileDown className="w-3.5 h-3.5 shrink-0" />
+                    Unduh PDF
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setReviewData(null)}
+                  className="text-slate-400 hover:text-slate-700 cursor-pointer shrink-0"
+                  aria-label="Tutup modal lembar jawaban"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {reviewLoading ? (
@@ -801,11 +1002,19 @@ export const GradeRecapView: React.FC<GradeRecapViewProps> = ({
                   ))}
                 </div>
 
-                <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex justify-end shrink-0">
+                <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => downloadStudentAnswerSheetPdf(reviewData)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+                  >
+                    <FileDown className="w-3.5 h-3.5 shrink-0" />
+                    Unduh Lembar Jawaban (PDF)
+                  </button>
                   <button
                     type="button"
                     onClick={() => setReviewData(null)}
-                    className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                    className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer"
                   >
                     Tutup
                   </button>

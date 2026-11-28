@@ -51,7 +51,9 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   onSelectPackage,
 }) => {
   const activePkgId = selectedPackageId || packages[0]?.id || null;
+  const activePkg = packages.find((p) => p.id === activePkgId) || null;
   const [data, setData] = useState<MonitoringPayload | null>(null);
+  const isProctorOnly = (data?.package.accessRole || activePkg?.access_role) === 'PROCTOR';
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
@@ -140,17 +142,17 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   useEffect(() => {
     if (!pendingAction && !confirmRotateToken) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && busySessionId === null && !rotatingToken) {
         setPendingAction(null);
         setConfirmRotateToken(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [pendingAction, confirmRotateToken]);
+  }, [pendingAction, confirmRotateToken, busySessionId, rotatingToken]);
 
   async function handleUnlock(student: MonitoringStudentRow) {
-    if (!student.sessionId || !activePkgId) return;
+    if (!student.sessionId || !activePkgId || busySessionId !== null) return;
     setBusySessionId(student.sessionId);
     setError(null);
     try {
@@ -166,7 +168,7 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   }
 
   async function handleExecutePendingAction() {
-    if (!pendingAction || !activePkgId) return;
+    if (!pendingAction || !activePkgId || busySessionId !== null) return;
     const { sessionId, type, studentName } = pendingAction;
     setBusySessionId(sessionId);
     setError(null);
@@ -179,7 +181,9 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
       } else if (type === 'force-submit') {
         const res = await teacherApi.forceSubmitSession(token, sessionId);
         setActionFeedback(
-          `Ujian ${studentName} berhasil diselesaikan paksa oleh pengawas (Nilai akhir: ${res.score}, Benar: ${res.correctCount}/${res.totalQuestions}).`
+          res.score === null || isProctorOnly
+            ? `Ujian ${studentName} berhasil diselesaikan paksa oleh pengawas.`
+            : `Ujian ${studentName} berhasil diselesaikan paksa oleh pengawas (Nilai akhir: ${res.score}, Benar: ${res.correctCount}/${res.totalQuestions}).`
         );
       } else if (type === 'extend-time') {
         const res = await teacherApi.extendSessionTime(token, sessionId, 10);
@@ -197,7 +201,7 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
   }
 
   async function handleRotateToken() {
-    if (!activePkgId) return;
+    if (!activePkgId || rotatingToken) return;
     setRotatingToken(true);
     try {
       const res = await teacherApi.rotateToken(token, activePkgId);
@@ -257,6 +261,16 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
           <p className="text-xs text-slate-500 mt-1">
             Pantau progres pengerjaan, buka kunci pelanggaran, izinkan ganti perangkat, tambah waktu, atau selesaikan sesi siswa secara langsung.
           </p>
+          {data && (
+            <p className="text-[11px] text-slate-500 mt-1">
+              Guru Mapel: <strong className="text-slate-700">{data.package.teacherName || '-'}</strong>
+              <span className="mx-1.5" aria-hidden="true">·</span>
+              Pengawas: <strong className="text-slate-700">{data.package.proctorName || 'Belum ditugaskan'}</strong>
+              {isProctorOnly && (
+                <span className="ml-2 font-semibold text-blue-700">· Mode Tugas Mengawas</span>
+              )}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0">
@@ -290,34 +304,37 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg text-xs">
               <span className="text-slate-500">Token:</span>
               <span className="font-mono font-bold text-slate-900">{data.package.currentToken}</span>
-              {confirmRotateToken ? (
-                <div className="inline-flex items-center gap-1.5 ml-1">
-                  <span className="text-[11px] font-semibold text-amber-800">Rotasi?</span>
+              {!isProctorOnly && (
+                confirmRotateToken ? (
+                  <div className="inline-flex items-center gap-1.5 ml-1">
+                    <span className="text-[11px] font-semibold text-amber-800">Rotasi?</span>
+                    <button
+                      type="button"
+                      disabled={rotatingToken}
+                      onClick={handleRotateToken}
+                      className="px-2 py-0.5 text-[11px] font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded cursor-pointer"
+                    >
+                      {rotatingToken ? '...' : 'Ya'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rotatingToken}
+                      onClick={() => setConfirmRotateToken(false)}
+                      className="px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                ) : (
                   <button
                     type="button"
-                    disabled={rotatingToken}
-                    onClick={handleRotateToken}
-                    className="px-2 py-0.5 text-[11px] font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded cursor-pointer"
+                    onClick={() => setConfirmRotateToken(true)}
+                    className="text-blue-700 hover:text-blue-900 font-semibold ml-1 cursor-pointer"
+                    title="Acak / Rotate Token"
                   >
-                    {rotatingToken ? '...' : 'Ya'}
+                    <RefreshCw className="w-3.5 h-3.5" />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmRotateToken(false)}
-                    className="px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
-                  >
-                    Batal
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmRotateToken(true)}
-                  className="text-blue-700 hover:text-blue-900 font-semibold ml-1 cursor-pointer"
-                  title="Acak / Rotate Token"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
+                )
               )}
             </div>
           )}
@@ -547,7 +564,7 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
                           {st.status === 'SUBMITTED' && (
                             <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700">
                               <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                              Selesai (Nilai {st.score})
+                              {isProctorOnly || st.score === null ? 'Selesai' : `Selesai (Nilai ${st.score})`}
                             </span>
                           )}
                           {st.status === 'NOT_STARTED' && (
@@ -611,8 +628,9 @@ export const LiveMonitoringView: React.FC<LiveMonitoringViewProps> = ({
                               </button>
                               <button
                                 type="button"
+                                disabled={isBusy}
                                 onClick={() => setPendingAction(null)}
-                                className="px-1.5 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
+                                className="px-1.5 py-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 disabled:opacity-40 cursor-pointer"
                               >
                                 Batal
                               </button>
